@@ -281,8 +281,14 @@ class FakeVRServer:
                         )
 
                     elif msg_type == MessageType.C2S_INTERACT.value:
-                        target_id = payload.get("target_id", "")
+                        target_id = payload.get("target_id", "").strip().lower()
                         npc = room_st.npcs.get(target_id)
+                        if not npc:
+                            for n in room_st.npcs.values():
+                                if n.id.lower() == target_id or n.name.lower() in target_id or target_id in n.name.lower():
+                                    npc = n
+                                    break
+
                         if npc:
                             await self._send_packet(
                                 writer,
@@ -293,6 +299,75 @@ class FakeVRServer:
                                     "sound_asset": npc.sound_asset
                                 }
                             )
+
+                    elif msg_type == MessageType.C2S_SPAWN_NPC.value:
+                        import uuid
+                        from server.room_manager import NPCInstance
+
+                        spawner_data = payload.get("spawner", payload)
+                        npc_cfg = spawner_data.get("npc_config", {})
+                        npc_name = npc_cfg.get("name", spawner_data.get("name", "NPC"))
+                        sp_x = float(spawner_data.get("x", player.position.x))
+                        sp_y = float(spawner_data.get("y", player.position.y))
+                        sp_z = float(spawner_data.get("z", 0.0))
+                        wander_rad = float(spawner_data.get("wander_radius", 5.0))
+                        walk_interval = float(npc_cfg.get("walk_interval", 3.0))
+                        sound_asset = npc_cfg.get("sound_asset", "footsteps/wood_1.wav")
+                        foley_asset = npc_cfg.get("foley_asset", "foley/regular/regular_1.wav")
+                        clothing = npc_cfg.get("clothing", "regular")
+                        dialogue = npc_cfg.get("dialogue", "Greetings, traveler.")
+                        script_name = npc_cfg.get("script_name", "default_idle")
+
+                        npc_id = spawner_data.get("id") or f"npc_{str(uuid.uuid4())[:6]}"
+
+                        new_npc = NPCInstance(
+                            npc_id=npc_id,
+                            name=npc_name,
+                            spawn_pos=Vector3(sp_x, sp_y, sp_z),
+                            wander_radius=wander_rad,
+                            walk_interval=walk_interval,
+                            sound_asset=sound_asset,
+                            foley_asset=foley_asset,
+                            clothing=clothing,
+                            dialogue=dialogue,
+                            script_name=script_name
+                        )
+                        room_st.npcs[npc_id] = new_npc
+
+                        # Save to server map data so it persists
+                        if "spawners" not in self.current_map_data:
+                            self.current_map_data["spawners"] = []
+                        existing = [s for s in self.current_map_data["spawners"] if s.get("id") == npc_id]
+                        if not existing:
+                            self.current_map_data["spawners"].append({
+                                "id": npc_id,
+                                "entity_type": "npc",
+                                "x": sp_x, "y": sp_y, "z": sp_z,
+                                "wander_radius": wander_rad,
+                                "interval": walk_interval,
+                                "npc_config": {
+                                    "name": npc_name,
+                                    "sound_asset": sound_asset,
+                                    "foley_asset": foley_asset,
+                                    "clothing": clothing,
+                                    "dialogue": dialogue,
+                                    "script_name": script_name,
+                                    "walk_interval": walk_interval
+                                }
+                            })
+                            try:
+                                with open(self.current_map_file, "w", encoding="utf-8") as f:
+                                    json.dump(self.current_map_data, f, indent=2)
+                            except Exception as e:
+                                print(f"[Server]: Failed saving spawned NPC to map: {e}")
+
+                        # Immediately broadcast updated NPC list to all clients in the room!
+                        await self._broadcast_to_room(
+                            player.room_id,
+                            MessageType.S2C_NPC_UPDATE,
+                            {"npcs": [n.to_dict() for n in room_st.npcs.values()]}
+                        )
+                        print(f"[Server]: Spawned NPC '{npc_name}' (ID: {npc_id}) at ({sp_x}, {sp_y}) into active room '{player.room_id}'")
 
                     elif msg_type == MessageType.C2S_ECHOLOCATION.value:
                         await self._broadcast_to_room(

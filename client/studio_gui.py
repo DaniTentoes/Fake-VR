@@ -202,6 +202,9 @@ class StructureEditorDialog(wx.Dialog):
             self.interior_objects.append(obj)
 
         self.refresh_interior_list()
+        if self.spawner_panel_ref:
+            self.spawner_panel_ref.refresh_spawners_from_map(self.spawners)
+
         wx.Bell()
 
     def on_delete_interior_obj(self, event):
@@ -224,8 +227,10 @@ class MapBuilderPanel(wx.Panel):
         self.objects = []
         self.travel_points = []
         self.structures = []
+        self.spawners = []
         self.raw_map_data = {}
         self.current_loaded_file = None
+        self.spawner_panel_ref = None
 
         main_sizer = wx.BoxSizer(wx.VERTICAL)
 
@@ -418,6 +423,7 @@ class MapBuilderPanel(wx.Panel):
         self.objects = []
         self.travel_points = list(data.get("travel_points", []))
         self.structures = list(data.get("structures", []))
+        self.spawners = list(data.get("spawners", []))
         self.lst_entities.Clear()
 
         self.txt_title.SetValue(data.get("title", os.path.basename(path)))
@@ -466,6 +472,9 @@ class MapBuilderPanel(wx.Panel):
             max_y = o.get("max_y", o.get("max_z", 0.0))
             snd_tag = f" [Sound: {o.get('sound_asset')}]" if o.get("sound_asset") else ""
             self.lst_entities.Append(f"{o.get('name')} ({o.get('material')}){snd_tag} [X: {o.get('min_x')}-{o.get('max_x')}, Y: {min_y}-{max_y}]")
+
+        if self.spawner_panel_ref:
+            self.spawner_panel_ref.refresh_spawners_from_map(self.spawners)
 
         wx.Bell()
 
@@ -556,6 +565,9 @@ class MapBuilderPanel(wx.Panel):
         self.objects.append(obj)
         snd_tag = f" [Sound: {snd}]" if snd else ""
         self.lst_entities.Append(f"{name} ({mat}){snd_tag} [X: {min_x}-{max_x}, Y: {min_y}-{max_y}] - {sec}s")
+        if self.spawner_panel_ref:
+            self.spawner_panel_ref.refresh_spawners_from_map(self.spawners)
+
         wx.Bell()
 
     def on_remove_selected(self, event):
@@ -595,6 +607,7 @@ class MapBuilderPanel(wx.Panel):
 
         data["field_objects"] = field_objs
         data["travel_points"] = self.travel_points
+        data["spawners"] = self.spawners
         return data
 
     def on_export_map(self, event):
@@ -681,16 +694,36 @@ class MapBuilderPanel(wx.Panel):
 
 
 class SpawnerNPCStudioPanel(wx.Panel):
-    """Spawner & NPC Studio: Design and configure living NPCs with audio and behavior scripting."""
-    def __init__(self, parent):
+    """Spawner & NPC Studio: Design living NPCs, save to map, and spawn immediately into the active world."""
+    def __init__(self, parent, map_panel=None):
         super().__init__(parent)
+        self.map_panel = map_panel
         self.spawners = []
         main_sizer = wx.BoxSizer(wx.VERTICAL)
 
-        box = wx.StaticBox(self, label="Spawner & Interactive NPC Designer")
+        # Top Bar: Map Spawner Context & Quick Live Spawn
+        top_box = wx.StaticBox(self, label="Spawner Operations")
+        top_sizer = wx.StaticBoxSizer(top_box, wx.HORIZONTAL)
+
+        self.btn_live_spawn = wx.Button(self, label="⚡ Spawn Live into Active World Now")
+        self.btn_live_spawn.SetBackgroundColour(wx.Colour(220, 245, 230))
+        self.btn_live_spawn.Bind(wx.EVT_BUTTON, self.on_spawn_live)
+        top_sizer.Add(self.btn_live_spawn, 1, wx.EXPAND | wx.RIGHT, 6)
+
+        self.btn_save_spawner = wx.Button(self, label="💾 Save / Update in Map File")
+        self.btn_save_spawner.Bind(wx.EVT_BUTTON, self.on_save_spawner)
+        top_sizer.Add(self.btn_save_spawner, 1, wx.EXPAND)
+
+        main_sizer.Add(top_sizer, 0, wx.EXPAND | wx.ALL, 6)
+
+        # Content Splitter: Form on left, Spawners List on right
+        content_sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        # Left Column: NPC Attributes Form
+        box = wx.StaticBox(self, label="Interactive NPC Designer")
         box_sizer = wx.StaticBoxSizer(box, wx.VERTICAL)
 
-        grid = wx.FlexGridSizer(rows=7, cols=2, vgap=6, hgap=10)
+        grid = wx.FlexGridSizer(rows=7, cols=2, vgap=5, hgap=8)
 
         grid.Add(wx.StaticText(self, label="NPC Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.txt_npc_name = wx.TextCtrl(self, value="Town Guard Cedric")
@@ -704,26 +737,26 @@ class SpawnerNPCStudioPanel(wx.Panel):
         h_xy.Add(self.txt_sp_y, 1, wx.EXPAND | wx.LEFT, 4)
         grid.Add(h_xy, 1, wx.EXPAND)
 
-        grid.Add(wx.StaticText(self, label="Wander Radius (tiles/meters):"), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(wx.StaticText(self, label="Wander Radius (meters):"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.txt_wander = wx.TextCtrl(self, value="6.0")
         grid.Add(self.txt_wander, 1, wx.EXPAND)
 
-        grid.Add(wx.StaticText(self, label="Outfit / Foley Material:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(wx.StaticText(self, label="Outfit / Foley:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.choice_clothing = wx.Choice(self, choices=CLOTHING_TYPES)
         self.choice_clothing.SetStringSelection("armor")
         grid.Add(self.choice_clothing, 1, wx.EXPAND)
 
-        grid.Add(wx.StaticText(self, label="Voice / Acoustic Presence:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(wx.StaticText(self, label="Voice / Acoustic Timbre:"), 0, wx.ALIGN_CENTER_VERTICAL)
         h_voice = wx.BoxSizer(wx.HORIZONTAL)
         self.txt_voice = wx.TextCtrl(self, value="auras/hum.wav")
         h_voice.Add(self.txt_voice, 1, wx.EXPAND | wx.RIGHT, 4)
-        self.btn_audition_voice = wx.Button(self, label="Audition Voice")
+        self.btn_audition_voice = wx.Button(self, label="Audition")
         self.btn_audition_voice.Bind(wx.EVT_BUTTON, self.on_audition_voice)
         h_voice.Add(self.btn_audition_voice, 0)
         grid.Add(h_voice, 1, wx.EXPAND)
 
-        grid.Add(wx.StaticText(self, label="Dialogue Text:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_dialogue = wx.TextCtrl(self, value="Hail, traveler! Keep your footing. The road north leads to the grand city.", style=wx.TE_MULTILINE, size=(-1, 50))
+        grid.Add(wx.StaticText(self, label="Interactive Dialogue:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_dialogue = wx.TextCtrl(self, value="Hail, traveler! Keep your footing. The road north leads to the grand city.", style=wx.TE_MULTILINE, size=(-1, 45))
         grid.Add(self.txt_dialogue, 1, wx.EXPAND)
 
         grid.Add(wx.StaticText(self, label="Behavior Script Hook:"), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -731,20 +764,180 @@ class SpawnerNPCStudioPanel(wx.Panel):
         grid.Add(self.txt_script, 1, wx.EXPAND)
 
         grid.AddGrowableCol(1, 1)
-        box_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 6)
+        box_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 5)
 
-        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_add_spawner = wx.Button(self, label="Save Spawner to World")
-        self.btn_add_spawner.Bind(wx.EVT_BUTTON, self.on_save_spawner)
-        btn_sizer.Add(self.btn_add_spawner, 1, wx.EXPAND | wx.RIGHT, 5)
-
-        self.btn_test_interact = wx.Button(self, label="Test Dialogue Speech")
+        h_test = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_test_interact = wx.Button(self, label="Preview Dialogue Box")
         self.btn_test_interact.Bind(wx.EVT_BUTTON, self.on_test_dialogue)
-        btn_sizer.Add(self.btn_test_interact, 1, wx.EXPAND)
+        h_test.Add(self.btn_test_interact, 1, wx.EXPAND)
+        box_sizer.Add(h_test, 0, wx.EXPAND | wx.TOP, 4)
 
-        box_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 6)
-        main_sizer.Add(box_sizer, 1, wx.EXPAND | wx.ALL, 8)
+        content_sizer.Add(box_sizer, 1, wx.EXPAND | wx.RIGHT, 6)
+
+        # Right Column: List of Map Spawners
+        list_box = wx.StaticBox(self, label="Configured Map Spawners")
+        list_sizer = wx.StaticBoxSizer(list_box, wx.VERTICAL)
+
+        self.lst_spawners = wx.ListBox(self, style=wx.LB_SINGLE)
+        self.lst_spawners.Bind(wx.EVT_LISTBOX, self.on_select_spawner)
+        list_sizer.Add(self.lst_spawners, 1, wx.EXPAND | wx.ALL, 4)
+
+        self.btn_del_spawner = wx.Button(self, label="Remove Selected Spawner")
+        self.btn_del_spawner.Bind(wx.EVT_BUTTON, self.on_delete_spawner)
+        list_sizer.Add(self.btn_del_spawner, 0, wx.EXPAND | wx.TOP, 4)
+
+        content_sizer.Add(list_sizer, 1, wx.EXPAND)
+        main_sizer.Add(content_sizer, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
+
         self.SetSizer(main_sizer)
+
+    def refresh_spawners_from_map(self, spawners_list):
+        self.spawners = list(spawners_list)
+        self.lst_spawners.Clear()
+        for sp in self.spawners:
+            cfg = sp.get("npc_config", {})
+            name = cfg.get("name", "NPC")
+            x = sp.get("x", 0.0)
+            y = sp.get("y", sp.get("z", 0.0))
+            self.lst_spawners.Append(f"{name} (at X:{x}, Y:{y}, r:{sp.get('wander_radius', 5)}m)")
+
+    def on_select_spawner(self, event):
+        sel = self.lst_spawners.GetSelection()
+        if sel != wx.NOT_FOUND and sel < len(self.spawners):
+            sp = self.spawners[sel]
+            cfg = sp.get("npc_config", {})
+            self.txt_npc_name.SetValue(str(cfg.get("name", "NPC")))
+            self.txt_sp_x.SetValue(str(sp.get("x", 0.0)))
+            self.txt_sp_y.SetValue(str(sp.get("y", sp.get("z", 0.0))))
+            self.txt_wander.SetValue(str(sp.get("wander_radius", 5.0)))
+            cloth = cfg.get("clothing", "regular")
+            if cloth in CLOTHING_TYPES:
+                self.choice_clothing.SetStringSelection(cloth)
+            self.txt_voice.SetValue(str(cfg.get("voice_sound", "auras/hum.wav")))
+            self.txt_dialogue.SetValue(str(cfg.get("dialogue", "")))
+            self.txt_script.SetValue(str(cfg.get("script_name", "default_idle")))
+
+    def assemble_current_spawner_dict(self):
+        name = self.txt_npc_name.GetValue().strip()
+        x = float(self.txt_sp_x.GetValue())
+        y = float(self.txt_sp_y.GetValue())
+        wander = float(self.txt_wander.GetValue())
+        clothing = self.choice_clothing.GetStringSelection()
+        voice = self.txt_voice.GetValue().strip()
+        dialogue = self.txt_dialogue.GetValue().strip()
+        script = self.txt_script.GetValue().strip()
+
+        import uuid
+        sp_id = f"spawner_{name.lower().replace(' ', '_')}"
+        return {
+            "id": sp_id,
+            "entity_type": "npc",
+            "x": x,
+            "y": y,
+            "z": 0.0,
+            "interval": 3.0,
+            "max_count": 1,
+            "wander_radius": wander,
+            "npc_config": {
+                "name": name,
+                "sound_asset": "footsteps/wood_1.wav",
+                "foley_asset": f"foley/{clothing}/{clothing}_1.wav" if clothing != "naked" else "foley/regular/regular_1.wav",
+                "voice_sound": voice,
+                "clothing": clothing,
+                "walk_interval": 2.8,
+                "dialogue": dialogue,
+                "script_name": script
+            }
+        }
+
+    def on_save_spawner(self, event):
+        try:
+            sp = self.assemble_current_spawner_dict()
+        except ValueError:
+            wx.MessageBox("Coordinates and wander radius must be numbers.", "Validation", wx.ICON_ERROR)
+            return
+
+        sel = self.lst_spawners.GetSelection()
+        if sel != wx.NOT_FOUND and sel < len(self.spawners):
+            self.spawners[sel] = sp
+        else:
+            self.spawners.append(sp)
+
+        if self.map_panel:
+            self.map_panel.spawners = self.spawners
+            self.map_panel.on_export_map(None)
+
+        self.refresh_spawners_from_map(self.spawners)
+        wx.MessageBox(f"Spawner for '{sp['npc_config']['name']}' saved to map configuration!", "Spawner Saved", wx.ICON_INFORMATION)
+
+    def on_spawn_live(self, event):
+        """Immediately connects to the running server and spawns the NPC into the live world instance!"""
+        try:
+            sp = self.assemble_current_spawner_dict()
+        except ValueError:
+            wx.MessageBox("Coordinates and wander radius must be numbers.", "Validation", wx.ICON_ERROR)
+            return
+
+        # 1. Update local map definition
+        self.on_save_spawner(None)
+
+        # 2. Push live spawn command to running server
+        cfg_path = os.path.join(ROOT_DIR, "client_config.json")
+        host = "127.0.0.1"
+        port = 7777
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    c = json.load(f)
+                    host = c.get("host", host)
+                    port = c.get("port", port)
+            except Exception:
+                pass
+
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(3.0)
+            s.connect((host, port))
+
+            # Handshake
+            join_msg = json.dumps({
+                "type": "c2s_join",
+                "payload": {"username": "[Studio Spawner]", "room_id": "lounge", "aura": "none"}
+            }) + "\n"
+            s.sendall(join_msg.encode("utf-8"))
+
+            # Spawn NPC command
+            spawn_msg = json.dumps({
+                "type": "c2s_spawn_npc",
+                "payload": {"spawner": sp}
+            }) + "\n"
+            s.sendall(spawn_msg.encode("utf-8"))
+            s.close()
+
+            name = sp["npc_config"]["name"]
+            wx.MessageBox(
+                f"⚡ SUCCESS! '{name}' was spawned directly into the running world instance ({host}:{port})!\n\n"
+                f"The NPC has immediately materialized at ({sp['x']}, {sp['y']}) and started its autonomous wander simulation.\n"
+                f"All connected clients can now hear its footsteps, foley audio, and press 'E' to interact with it.",
+                "Live NPC Materialized",
+                wx.ICON_INFORMATION
+            )
+        except Exception as e:
+            wx.MessageBox(
+                f"Could not connect to live Fake-VR server at {host}:{port}:\n{e}\n\n"
+                f"Please ensure the server (run_server.py) is running to spawn live.",
+                "Live Spawn Error",
+                wx.ICON_WARNING
+            )
+
+    def on_delete_spawner(self, event):
+        sel = self.lst_spawners.GetSelection()
+        if sel != wx.NOT_FOUND and sel < len(self.spawners):
+            del self.spawners[sel]
+            if self.map_panel:
+                self.map_panel.spawners = self.spawners
+                self.map_panel.on_export_map(None)
+            self.refresh_spawners_from_map(self.spawners)
 
     def on_audition_voice(self, event):
         v = self.txt_voice.GetValue().strip()
@@ -758,9 +951,6 @@ class SpawnerNPCStudioPanel(wx.Panel):
         name = self.txt_npc_name.GetValue().strip()
         dlg = self.txt_dialogue.GetValue().strip()
         wx.MessageBox(f"{name} says:\n\n\"{dlg}\"", "NPC Interaction Preview", wx.ICON_INFORMATION)
-
-    def on_save_spawner(self, event):
-        wx.MessageBox("Spawner updated in world specification.", "Saved", wx.ICON_INFORMATION)
 
 
 class AuraFashionPanel(wx.Panel):
@@ -823,8 +1013,11 @@ class MainStudioFrame(wx.Frame):
 
         notebook = wx.Notebook(self)
         self.panel_map = MapBuilderPanel(notebook)
-        self.panel_spawner = SpawnerNPCStudioPanel(notebook)
+        self.panel_spawner = SpawnerNPCStudioPanel(notebook, map_panel=self.panel_map)
         self.panel_aura = AuraFashionPanel(notebook)
+
+        self.panel_map.spawner_panel_ref = self.panel_spawner
+        self.panel_spawner.refresh_spawners_from_map(self.panel_map.spawners)
 
         notebook.AddPage(self.panel_map, "Hierarchical Maps & Structures")
         notebook.AddPage(self.panel_spawner, "Spawners & Living NPCs")

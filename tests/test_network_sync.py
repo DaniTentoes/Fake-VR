@@ -150,6 +150,50 @@ def run_test():
         assert received_dialogue, "Client A must receive S2C_INTERACT_RESPONSE!"
         print("  -> Interactive NPC dialogue response PASSED.")
 
+        # 4. Client A tests spawning a new NPC live into active world
+        live_spawn_packet = encode_packet(MessageType.C2S_SPAWN_NPC, {
+            "spawner": {
+                "id": "npc_bard",
+                "x": 8.0,
+                "y": 12.0,
+                "wander_radius": 4.0,
+                "npc_config": {
+                    "name": "Bard Lyra",
+                    "sound_asset": "footsteps/carpet_1.wav",
+                    "foley_asset": "foley/regular/regular_1.wav",
+                    "voice_sound": "auras/chime.wav",
+                    "clothing": "regular",
+                    "dialogue": "I sing of ancient tales and distant worlds."
+                }
+            }
+        })
+        s_a.sendall(live_spawn_packet)
+        time.sleep(0.5)
+
+        # Client B verifies receiving S2C_NPC_UPDATE with the new NPC
+        received_live_npc = False
+        start_t = time.time()
+        while time.time() - start_t < 2.0:
+            try:
+                data = s_b.recv(4096)
+                if not data:
+                    break
+                buf += data.decode("utf-8")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    pkt = decode_packet(line.encode("utf-8"))
+                    if pkt and pkt.get("type") == MessageType.S2C_NPC_UPDATE.value:
+                        npcs = pkt['payload'].get("npcs", [])
+                        for n in npcs:
+                            if n.get("name") == "Bard Lyra":
+                                received_live_npc = True
+                                print(f"[Client B]: Live NPC materialized on client -> {n.get('name')} at {n.get('position')}")
+            except socket.timeout:
+                break
+
+        assert received_live_npc, "Client B must receive updated S2C_NPC_UPDATE containing Bard Lyra!"
+        print("  -> Live NPC spawning into active world instance PASSED.")
+
         s_a.close()
         s_b.close()
     finally:

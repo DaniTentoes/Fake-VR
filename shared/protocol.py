@@ -49,6 +49,7 @@ class MessageType(str, Enum):
     S2C_OBJECT_RESPAWNED = "s2c_object_respawned"
 
     # NPC Simulation & Spawners
+    C2S_SPAWN_NPC = "c2s_spawn_npc"
     S2C_NPC_UPDATE = "s2c_npc_update"
     C2S_INTERACT = "c2s_interact"
     S2C_INTERACT_RESPONSE = "s2c_interact_response"
