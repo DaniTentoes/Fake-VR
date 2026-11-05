@@ -1,6 +1,11 @@
 """
 High-performance asynchronous TCP server for Fake-VR.
-Listens on 0.0.0.0 and synchronizes spatial presence, acoustic auras, and echolocation events.
+Authoritative host orchestrating:
+1. Synchronized object health, destruction & configurable respawn timers.
+2. In-game building tool wall persistence and distribution.
+3. TravelPoints connecting hierarchical maps (Country -> Cities -> Structures).
+4. Simulated wandering NPCs with interactable dialogue.
+5. 20Hz spatial snapshot synchronization.
 """
 
 from __future__ import annotations
@@ -8,17 +13,18 @@ import asyncio
 import socket
 import os
 import json
-from typing import Dict, Optional
+import time
+from typing import Dict, Optional, List
 
 from shared.protocol import MessageType, encode_packet, decode_packet
 from shared.models import Vector3, SurfaceType, AuraType
-from server.room_manager import RoomManager, ConnectedPlayer
+from server.room_manager import RoomManager, ConnectedPlayer, RoomState
 
-TICK_RATE_HZ = 20  # 20 updates/second for smooth spatial audio interpolation
+TICK_RATE_HZ = 20  # 20 updates/second
 
 
 class FakeVRServer:
-    """Asyncio TCP server orchestrating Fake-VR world instances."""
+    """Authoritative Asyncio TCP server for Fake-VR."""
 
     def __init__(self, host: str = "0.0.0.0", port: int = 7777):
         self.host = host
@@ -29,28 +35,28 @@ class FakeVRServer:
         self._writer_to_player: Dict[asyncio.StreamWriter, ConnectedPlayer] = {}
         self.maps_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "maps")
         self.current_map_file = os.path.join(self.maps_dir, "default_world.json")
-        self.current_map_data: dict = self._load_current_map()
+        self.current_map_data: dict = self._load_map_file(self.current_map_file)
 
-    def _load_current_map(self) -> dict:
-        if os.path.exists(self.current_map_file):
+        # Initialize primary room with map data
+        lounge_room = self.room_mgr.get_or_create_room("lounge")
+        lounge_room.populate_from_map_dict(self.current_map_data)
+
+    def _load_map_file(self, path: str) -> dict:
+        if os.path.exists(path):
             try:
-                with open(self.current_map_file, "r", encoding="utf-8") as f:
+                with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
-                print(f"[Server]: Error loading map file: {e}")
+                print(f"[Server]: Error loading map file '{path}': {e}")
         return {}
 
     async def start(self) -> None:
-        """Starts the TCP server and background broadcast tick loop."""
         self.is_running = True
         self.server = await asyncio.start_server(self._handle_client, self.host, self.port)
         print(f"[Server]: Fake-VR Server listening on {self.host}:{self.port}")
-
-        # Start 20Hz tick loop
         asyncio.create_task(self._tick_loop())
 
     async def stop(self) -> None:
-        """Shuts down server."""
         self.is_running = False
         if self.server:
             self.server.close()
@@ -58,7 +64,6 @@ class FakeVRServer:
         print("[Server]: Server stopped.")
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Connection handler for each incoming player socket."""
         addr = writer.get_extra_info("peername")
         print(f"[Server]: New connection established from {addr}")
         player: Optional[ConnectedPlayer] = None
@@ -67,7 +72,7 @@ class FakeVRServer:
             while self.is_running:
                 line = await reader.readline()
                 if not line:
-                    break  # Client disconnected
+                    break
 
                 packet = decode_packet(line)
                 if not packet:
@@ -78,14 +83,16 @@ class FakeVRServer:
 
                 if msg_type == MessageType.C2S_JOIN.value:
                     username = payload.get("username", "Player")
-                    room_id = payload.get("room_id", "resonance_lounge")
+                    room_id = payload.get("room_id", "lounge")
                     aura = AuraType(payload.get("aura", AuraType.NONE.value))
 
                     player = self.room_mgr.add_player(writer, username, room_id, aura)
                     self._writer_to_player[writer] = player
                     print(f"[Server]: Player joined -> '{username}' (ID: {player.player_id}) in room '{room_id}'")
 
-                    # Send welcome packet to new player
+                    room_st = self.room_mgr.get_or_create_room(player.room_id)
+
+                    # Send welcome packet
                     welcome_payload = {
                         "player_id": player.player_id,
                         "room_id": player.room_id,
@@ -98,7 +105,7 @@ class FakeVRServer:
                     }
                     await self._send_packet(writer, MessageType.S2C_WELCOME, welcome_payload)
 
-                    # Send authoritative map data to newly connected player
+                    # Send authoritative map data
                     if self.current_map_data:
                         await self._send_packet(
                             writer,
@@ -106,7 +113,24 @@ class FakeVRServer:
                             {"map": self.current_map_data}
                         )
 
-                    # Broadcast player joined to others in room
+                    # Send existing destroyed/damaged object states so client doesn't see broken objects
+                    for obj in room_st.objects.values():
+                        if obj.is_destroyed or obj.health < obj.max_health:
+                            await self._send_packet(
+                                writer,
+                                MessageType.S2C_OBJECT_STATE,
+                                obj.to_dict()
+                            )
+
+                    # Send current NPCs in the room
+                    if room_st.npcs:
+                        await self._send_packet(
+                            writer,
+                            MessageType.S2C_NPC_UPDATE,
+                            {"npcs": [npc.to_dict() for npc in room_st.npcs.values()]}
+                        )
+
+                    # Announce player joined
                     await self._broadcast_to_room(
                         player.room_id,
                         MessageType.S2C_PLAYER_JOINED,
@@ -115,27 +139,29 @@ class FakeVRServer:
                     )
 
                 elif player is not None:
-                    # Player is authenticated, handle game actions
+                    room_st = self.room_mgr.get_or_create_room(player.room_id)
+
                     if msg_type == MessageType.C2S_MOVE.value:
                         pos_dict = payload.get("position", {})
                         player.position = Vector3.from_dict(pos_dict)
                         player.yaw = float(payload.get("yaw", 0.0))
                         player.pitch = float(payload.get("pitch", 0.0))
                         player.is_moving = bool(payload.get("is_moving", False))
+                        player.is_jumping = bool(payload.get("is_jumping", False))
                         player.surface = SurfaceType(payload.get("surface", SurfaceType.WOOD.value))
-                        clothing_val = payload.get("clothing", "regular")
+                        player.clothing = payload.get("clothing", "regular")
 
-                        # If player took a physical step, immediately broadcast to other clients in room
                         if player.is_moving:
                             await self._broadcast_to_room(
                                 player.room_id,
-                                MessageType.C2S_MOVE, # Relay movement step
+                                MessageType.C2S_MOVE,
                                 {
                                     "player_id": player.player_id,
                                     "position": player.position.to_dict(),
                                     "yaw": player.yaw,
                                     "surface": player.surface.value,
-                                    "clothing": clothing_val
+                                    "clothing": player.clothing,
+                                    "is_jumping": player.is_jumping
                                 },
                                 exclude_player_id=player.player_id
                             )
@@ -143,8 +169,12 @@ class FakeVRServer:
                     elif msg_type == MessageType.C2S_ATTACK.value:
                         target_name = payload.get("target_name", "")
                         mat_val = payload.get("material", "wood")
-                        destroyed = bool(payload.get("destroyed", False))
+                        damage = int(payload.get("damage", 25))
                         impact_dict = payload.get("impact_pos", player.position.to_dict())
+
+                        # Authoritative Server Object Damage Check
+                        obj, was_destroyed = room_st.damage_object(target_name, damage, time.time())
+
                         await self._broadcast_to_room(
                             player.room_id,
                             MessageType.S2C_ATTACK_EVENT,
@@ -153,54 +183,138 @@ class FakeVRServer:
                                 "username": player.username,
                                 "target_name": target_name,
                                 "material": mat_val,
-                                "destroyed": destroyed,
+                                "destroyed": was_destroyed,
                                 "impact_pos": impact_dict
-                            },
+                            }
+                        )
+
+                        # Broadcast synchronized object health to ALL clients
+                        if obj:
+                            await self._broadcast_to_room(
+                                player.room_id,
+                                MessageType.S2C_OBJECT_STATE,
+                                obj.to_dict()
+                            )
+
+                    elif msg_type == MessageType.C2S_BUILD_WALL.value:
+                        # Player erected a wall using the building tool!
+                        x1 = float(payload.get("x1", 0.0))
+                        y1 = float(payload.get("y1", 0.0))
+                        x2 = float(payload.get("x2", 0.0))
+                        y2 = float(payload.get("y2", 0.0))
+                        mat = payload.get("material", "wood")
+                        name = payload.get("name", "Player Built Wall")
+
+                        new_wall = {
+                            "x1": x1, "y1": y1,
+                            "x2": x2, "y2": y2,
+                            "material": mat,
+                            "reflectivity": 0.60,
+                            "name": name,
+                            "is_doorway": False
+                        }
+
+                        if "boundary_walls" not in self.current_map_data:
+                            self.current_map_data["boundary_walls"] = []
+                        self.current_map_data["boundary_walls"].append(new_wall)
+
+                        # Save updated map to disk
+                        try:
+                            with open(self.current_map_file, "w", encoding="utf-8") as f:
+                                json.dump(self.current_map_data, f, indent=2)
+                        except Exception as e:
+                            print(f"[Server]: Failed saving map with player built wall: {e}")
+
+                        # Broadcast live map update to all connected players
+                        for rid in self.room_mgr.rooms:
+                            await self._broadcast_to_room(
+                                rid,
+                                MessageType.S2C_MAP_UPDATED,
+                                {
+                                    "updated_by": player.username,
+                                    "title": self.current_map_data.get("title", "World"),
+                                    "map": self.current_map_data
+                                }
+                            )
+                        print(f"[Server]: Wall erected by {player.username} from ({x1},{y1}) to ({x2},{y2})")
+
+                    elif msg_type == MessageType.C2S_TRAVEL.value:
+                        # Player walked into a TravelPoint to another map
+                        target_map = payload.get("target_map", "default_world.json")
+                        spawn_dict = payload.get("spawn", {})
+                        target_room_id = target_map.replace(".json", "")
+
+                        print(f"[Server]: Player {player.username} traveling to '{target_map}'")
+                        map_path = os.path.join(self.maps_dir, target_map)
+                        child_map_data = self._load_map_file(map_path)
+                        if not child_map_data:
+                            child_map_data = self.current_map_data
+
+                        old_room = player.room_id
+                        self.room_mgr.change_room(player.player_id, target_room_id)
+                        new_room_st = self.room_mgr.get_or_create_room(target_room_id)
+                        new_room_st.populate_from_map_dict(child_map_data)
+
+                        if spawn_dict:
+                            player.position = Vector3.from_dict(spawn_dict)
+
+                        # Notify old room
+                        await self._broadcast_to_room(
+                            old_room,
+                            MessageType.S2C_PLAYER_LEFT,
+                            {"player_id": player.player_id, "username": player.username}
+                        )
+
+                        # Welcome player to new room with map data
+                        await self._send_packet(
+                            writer,
+                            MessageType.S2C_MAP_DATA,
+                            {"map": child_map_data}
+                        )
+
+                        # Notify new room
+                        await self._broadcast_to_room(
+                            target_room_id,
+                            MessageType.S2C_PLAYER_JOINED,
+                            {"player": player.to_player_state().to_dict()},
                             exclude_player_id=player.player_id
                         )
 
+                    elif msg_type == MessageType.C2S_INTERACT.value:
+                        target_id = payload.get("target_id", "")
+                        npc = room_st.npcs.get(target_id)
+                        if npc:
+                            await self._send_packet(
+                                writer,
+                                MessageType.S2C_INTERACT_RESPONSE,
+                                {
+                                    "speaker_name": npc.name,
+                                    "dialogue": npc.dialogue,
+                                    "sound_asset": npc.sound_asset
+                                }
+                            )
+
                     elif msg_type == MessageType.C2S_ECHOLOCATION.value:
-                        # Broadcast echolocation click to all players in the room
-                        event_payload = {
-                            "player_id": player.player_id,
-                            "position": player.position.to_dict(),
-                            "yaw": player.yaw
-                        }
                         await self._broadcast_to_room(
                             player.room_id,
                             MessageType.S2C_ECHOLOCATION_EVENT,
-                            event_payload,
+                            {
+                                "player_id": player.player_id,
+                                "position": player.position.to_dict(),
+                                "yaw": player.yaw
+                            },
                             exclude_player_id=player.player_id
                         )
 
                     elif msg_type == MessageType.C2S_AURA_CHANGE.value:
                         aura_val = payload.get("aura", AuraType.NONE.value)
                         player.aura = AuraType(aura_val)
-                        print(f"[Server]: {player.username} changed acoustic aura to {player.aura.value}")
                         await self._broadcast_to_room(
                             player.room_id,
                             MessageType.S2C_AURA_CHANGE,
                             {"player_id": player.player_id, "aura": player.aura.value},
                             exclude_player_id=player.player_id
                         )
-
-                    elif msg_type == MessageType.C2S_ROOM_CHANGE.value:
-                        new_room = payload.get("room_id")
-                        old_room = player.room_id
-                        if self.room_mgr.change_room(player.player_id, new_room):
-                            # Tell old room
-                            await self._broadcast_to_room(
-                                old_room,
-                                MessageType.S2C_PLAYER_LEFT,
-                                {"player_id": player.player_id, "username": player.username}
-                            )
-                            # Tell new room
-                            await self._broadcast_to_room(
-                                new_room,
-                                MessageType.S2C_PLAYER_JOINED,
-                                {"player": player.to_player_state().to_dict()},
-                                exclude_player_id=player.player_id
-                            )
 
                     elif msg_type == MessageType.C2S_UPDATE_MAP.value:
                         new_map = payload.get("map")
@@ -210,12 +324,13 @@ class FakeVRServer:
                             try:
                                 with open(self.current_map_file, "w", encoding="utf-8") as f:
                                     json.dump(new_map, f, indent=2)
-                                print(f"[Server]: Map updated by {player.username} and saved to disk: '{map_title}'")
                             except Exception as e:
                                 print(f"[Server]: Failed saving updated map: {e}")
 
-                            # Broadcast map update to all rooms and players on the server
+                            # Update all room states
                             for rid in self.room_mgr.rooms:
+                                r_st = self.room_mgr.get_or_create_room(rid)
+                                r_st.populate_from_map_dict(new_map)
                                 await self._broadcast_to_room(
                                     rid,
                                     MessageType.S2C_MAP_UPDATED,
@@ -228,7 +343,6 @@ class FakeVRServer:
 
                     elif msg_type == MessageType.C2S_CHAT.value:
                         chat_text = payload.get("text", "")
-                        print(f"[Chat] {player.username}: {chat_text}")
                         await self._broadcast_to_room(
                             player.room_id,
                             MessageType.S2C_CHAT,
@@ -286,26 +400,50 @@ class FakeVRServer:
                 pass
 
     async def _tick_loop(self) -> None:
-        """20Hz World broadcast loop syncing player positions and states."""
+        """Authoritative broadcast loop syncing players, NPC wander steps, and respawns."""
         interval = 1.0 / TICK_RATE_HZ
+        npc_step_check_interval = 0.5
+        last_npc_check = 0.0
+
         while self.is_running:
+            now = time.time()
             start_time = asyncio.get_event_loop().time()
 
-            for room_id in self.room_mgr.rooms:
+            for room_id in list(self.room_mgr.rooms.keys()):
                 players = self.room_mgr.get_room_players(room_id)
-                if not players:
-                    continue
+                room_st = self.room_mgr.get_or_create_room(room_id)
 
-                snapshot = [p.to_player_state().to_dict() for p in players]
-                data = encode_packet(MessageType.S2C_WORLD_TICK, {"players": snapshot})
+                # Check and broadcast object respawns (configurable timer!)
+                respawned_objs = room_st.update_respawns(now)
+                for robj in respawned_objs:
+                    await self._broadcast_to_room(
+                        room_id,
+                        MessageType.S2C_OBJECT_RESPAWNED,
+                        robj.to_dict()
+                    )
 
-                for p in players:
-                    try:
-                        p.writer.write(data)
-                    except Exception:
-                        pass
+                # Simulate NPC steps and wander movement
+                if now - last_npc_check >= npc_step_check_interval:
+                    moved_npcs = room_st.update_npcs(now)
+                    if moved_npcs:
+                        await self._broadcast_to_room(
+                            room_id,
+                            MessageType.S2C_NPC_UPDATE,
+                            {"npcs": [n.to_dict() for n in room_st.npcs.values()]}
+                        )
 
-            # Flush writers
+                if players:
+                    snapshot = [p.to_player_state().to_dict() for p in players]
+                    data = encode_packet(MessageType.S2C_WORLD_TICK, {"players": snapshot})
+                    for p in players:
+                        try:
+                            p.writer.write(data)
+                        except Exception:
+                            pass
+
+            if now - last_npc_check >= npc_step_check_interval:
+                last_npc_check = now
+
             for p in self.room_mgr.players.values():
                 try:
                     await p.writer.drain()

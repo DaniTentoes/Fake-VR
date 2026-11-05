@@ -31,6 +31,7 @@ public:
 
         iplAudioBufferAllocate(context, 1, frameSize, &inBuf);
         iplAudioBufferAllocate(context, 2, frameSize, &outBuf);
+        filterState = 0.0f;
         initialized = true;
         return true;
     }
@@ -55,44 +56,68 @@ public:
         const Vector3& sourcePos,
         float* leftOut,
         float* rightOut,
-        float volume = 1.0f
+        float volume = 1.0f,
+        float occlusionTransmission = 1.0f,
+        float occlusionMuffle = 0.0f
     ) {
-        if (!initialized) {
-            for (int i = 0; i < numFrames; ++i) {
-                leftOut[i] += monoIn[i] * 0.5f * volume;
-                rightOut[i] += monoIn[i] * 0.5f * volume;
-            }
-            return;
-        }
+        // Standard hearing range limit: 25 tiles (25.0 meters)
+        const float MAX_HEARING_DISTANCE = 25.0f;
 
-        // Relative vector from listener to source
         float dx = sourcePos.x - listenerPos.x;
-        float dy = sourcePos.y - listenerPos.y;
-        float dz = sourcePos.z - listenerPos.z;
+        float dy = sourcePos.y - listenerPos.y; // North/South horizontal
+        float dz = sourcePos.z - listenerPos.z; // Vertical altitude
         float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist >= MAX_HEARING_DISTANCE) {
+            return; // Completely out of hearing range
+        }
         if (dist < 1e-4f) dist = 0.1f;
+
+        // Smooth distance fade approaching 25 tiles to eliminate sudden cutoffs
+        float rangeFade = 1.0f;
+        if (dist > 18.0f) {
+            rangeFade = (MAX_HEARING_DISTANCE - dist) / (MAX_HEARING_DISTANCE - 18.0f);
+            rangeFade = (std::max)(0.0f, (std::min)(1.0f, rangeFade));
+        }
 
         float yawRad = listenerYawDeg * (float)M_PI / 180.0f;
         float cosY = std::cos(yawRad);
         float sinY = std::sin(yawRad);
 
-        // Transform into listener's local frame: +X is Right, -Z is Forward
-        float localX = dx * cosY - dz * sinY;
-        float localZ = dx * sinY + dz * cosY;
+        // Transform into listener's local coordinate frame:
+        // +X = Right, +Y = Forward (Ahead), +Z = Up
+        float localX = dx * cosY - dy * sinY;
+        float localAhead = dx * sinY + dy * cosY;
 
+        // In Steam Audio local frame: +X = Right, +Y = Up, -Z = Ahead
         IPLVector3 dir{};
         dir.x = localX / dist;
-        dir.y = dy / dist;
-        dir.z = -localZ / dist; // Steam Audio uses -Z for ahead
+        dir.y = dz / dist;
+        dir.z = -localAhead / dist;
 
-        // Inverse-square physical falloff with distance
-        float att = 1.0f / (1.0f + 0.5f * dist);
-        att *= volume;
+        // Realistic inverse-distance amplitude falloff
+        float att = 1.0f / (1.0f + 0.35f * dist + 0.02f * dist * dist);
+        att *= (volume * occlusionTransmission * rangeFade);
+
+        if (att < 0.0005f) return;
 
         int processFrames = (std::min)(numFrames, frameSize);
-        std::memcpy(inBuf.data[0], monoIn, processFrames * sizeof(float));
+
+        // Apply low-pass frequency damping based on material occlusion
+        float lpfAlpha = (std::max)(0.0f, (std::min)(0.88f, occlusionMuffle));
+        for (int i = 0; i < processFrames; ++i) {
+            filterState = lpfAlpha * filterState + (1.0f - lpfAlpha) * monoIn[i];
+            inBuf.data[0][i] = filterState;
+        }
         if (processFrames < frameSize) {
             std::memset(inBuf.data[0] + processFrames, 0, (frameSize - processFrames) * sizeof(float));
+        }
+
+        if (!initialized) {
+            for (int i = 0; i < processFrames; ++i) {
+                leftOut[i] += inBuf.data[0][i] * 0.5f * att;
+                rightOut[i] += inBuf.data[0][i] * 0.5f * att;
+            }
+            return;
         }
 
         IPLBinauralEffectParams params{};
@@ -118,6 +143,7 @@ private:
     IPLBinauralEffect binauralEffect = nullptr;
     IPLAudioBuffer inBuf{};
     IPLAudioBuffer outBuf{};
+    float filterState = 0.0f;
     int frameSize = 1024;
     bool initialized = false;
 };
@@ -148,14 +174,14 @@ public:
             return;
         }
 
-        // Preallocate pool of 16 independent binaural spatializers
-        pool.resize(16);
+        // 24 independent Steam Audio binaural effect units
+        pool.resize(24);
         for (auto& src : pool) {
             src.init(context, &audioSettings, hrtf, frameSize);
         }
 
         initialized = true;
-        std::cout << "[SteamAudioSystem] Steam Audio HRTF initialized with " << pool.size() << " binaural spatializers.\n";
+        std::cout << "[SteamAudioSystem] Steam Audio initialized with " << pool.size() << " binaural spatializers.\n";
     }
 
     ~SteamAudioSystem() {
@@ -179,10 +205,15 @@ public:
         const Vector3& sourcePos,
         float* leftOut,
         float* rightOut,
-        float volume = 1.0f
+        float volume = 1.0f,
+        float occlusionTransmission = 1.0f,
+        float occlusionMuffle = 0.0f
     ) {
         int idx = (std::abs(channelIndex)) % pool.size();
-        pool[idx].spatialize(monoIn, numFrames, listenerPos, listenerYawDeg, sourcePos, leftOut, rightOut, volume);
+        pool[idx].spatialize(
+            monoIn, numFrames, listenerPos, listenerYawDeg, sourcePos,
+            leftOut, rightOut, volume, occlusionTransmission, occlusionMuffle
+        );
     }
 
 private:

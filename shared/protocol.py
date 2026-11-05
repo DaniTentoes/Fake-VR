@@ -16,11 +16,13 @@ class MessageType(str, Enum):
     S2C_PLAYER_JOINED = "s2c_player_joined"
     S2C_PLAYER_LEFT = "s2c_player_left"
 
-    # Real-Time Spatial Movement & World Tick
+    # Real-Time Spatial Movement & 3D Jump
     C2S_MOVE = "c2s_move"
     S2C_WORLD_TICK = "s2c_world_tick"
+    C2S_JUMP = "c2s_jump"
+    S2C_JUMP_EVENT = "s2c_jump_event"
 
-    # Acoustic Mechanics
+    # Acoustic Mechanics & Raytracing
     C2S_ECHOLOCATION = "c2s_echolocation"
     S2C_ECHOLOCATION_EVENT = "s2c_echolocation_event"
 
@@ -28,16 +30,28 @@ class MessageType(str, Enum):
     C2S_AURA_CHANGE = "c2s_aura_change"
     S2C_AURA_CHANGE = "s2c_aura_change"
 
-    # World Transitions & Dynamic Map Sync
+    # World Transitions, TravelPoints & Hierarchical Map Sync
     C2S_ROOM_CHANGE = "c2s_room_change"
     S2C_ROOM_CHANGE = "s2c_room_change"
+    C2S_TRAVEL = "c2s_travel"
     S2C_MAP_DATA = "s2c_map_data"
     C2S_UPDATE_MAP = "c2s_update_map"
     S2C_MAP_UPDATED = "s2c_map_updated"
 
-    # Combat & Destruction
+    # In-Game Building Tool
+    C2S_BUILD_WALL = "c2s_build_wall"
+    S2C_WALL_BUILT = "s2c_wall_built"
+
+    # Server-Authoritative Combat & Destruction
     C2S_ATTACK = "c2s_attack"
     S2C_ATTACK_EVENT = "s2c_attack_event"
+    S2C_OBJECT_STATE = "s2c_object_state"
+    S2C_OBJECT_RESPAWNED = "s2c_object_respawned"
+
+    # NPC Simulation & Spawners
+    S2C_NPC_UPDATE = "s2c_npc_update"
+    C2S_INTERACT = "c2s_interact"
+    S2C_INTERACT_RESPONSE = "s2c_interact_response"
 
     # Social Chat / Beacons
     C2S_CHAT = "c2s_chat"

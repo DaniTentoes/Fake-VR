@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <fstream>
+#include <iostream>
 #include "nlohmann/json.hpp"
 
 #ifndef M_PI
@@ -15,22 +16,45 @@ namespace fakevr {
 
 using json = nlohmann::json;
 
+// Standardized 3D Coordinate System:
+// X = East / West (horizontal)
+// Y = North / South (horizontal, facing 0 deg = North/+Y)
+// Z = Altitude / Height (vertical, 0 = ground level, >0 = jumping/elevation)
 struct Vector3 {
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
+    float x = 0.0f; // East / West
+    float y = 0.0f; // North / South
+    float z = 0.0f; // Altitude / Height
 
     Vector3() = default;
-    Vector3(float _x, float _y, float _z) : x(_x), y(_y), z(_z) {}
+    Vector3(float _x, float _y, float _z = 0.0f) : x(_x), y(_y), z(_z) {}
 
     float distance_to(const Vector3& o) const {
         float dx = x - o.x, dy = y - o.y, dz = z - o.z;
         return std::sqrt(dx * dx + dy * dy + dz * dz);
     }
 
+    float distance_xy(const Vector3& o) const {
+        float dx = x - o.x, dy = y - o.y;
+        return std::sqrt(dx * dx + dy * dy);
+    }
+
+    // Backwards-compatible distance alias for horizontal 2D plane
     float distance_xz(const Vector3& o) const {
-        float dx = x - o.x, dz = z - o.z;
-        return std::sqrt(dx * dx + dz * dz);
+        return distance_xy(o);
+    }
+
+    float length() const {
+        return std::sqrt(x * x + y * y + z * z);
+    }
+
+    float length_horizontal() const {
+        return std::sqrt(x * x + y * y);
+    }
+
+    Vector3 normalized() const {
+        float l = length();
+        if (l < 1e-6f) return Vector3(0.0f, 1.0f, 0.0f);
+        return Vector3(x / l, y / l, z / l);
     }
 };
 
@@ -101,65 +125,83 @@ inline std::string surface_to_string(SurfaceType s) {
     }
 }
 
+inline SurfaceType string_to_surface(const std::string& s) {
+    if (s == "stone") return SurfaceType::STONE;
+    if (s == "carpet") return SurfaceType::CARPET;
+    if (s == "metal") return SurfaceType::METAL;
+    if (s == "grass") return SurfaceType::GRASS;
+    if (s == "tile") return SurfaceType::TILE;
+    if (s == "glass") return SurfaceType::GLASS;
+    if (s == "leather_fabric") return SurfaceType::LEATHER_FABRIC;
+    return SurfaceType::WOOD;
+}
+
 // Physical Acoustic Properties for Materials
 struct AcousticMaterialProps {
-    float reflectivity;      // 0.0 to 1.0 (1.0 = total reflection)
-    float highFreqDamping;   // absorption of high frequencies (0.0 = bright, 1.0 = heavily damped)
-    float resonancePitch;    // characteristic pitch shift for impulse return
+    float reflectivity;         // 0.0 to 1.0 (fraction of energy reflected)
+    float highFreqDamping;      // absorption of high frequencies on reflection
+    float resonancePitch;       // characteristic resonant frequency (Hz)
+    float transmission;         // 0.0 to 1.0 (acoustic energy passing through when occluded)
+    float transmissionMuffle;   // low-pass filter factor through the material (0.0 bright, 1.0 heavy muffle)
 };
 
 inline AcousticMaterialProps get_material_acoustics(SurfaceType mat) {
     switch (mat) {
         case SurfaceType::GLASS:
-            return {0.96f, 0.05f, 3200.0f}; // Ultra crisp, high glass resonance
+            return {0.96f, 0.05f, 3200.0f, 0.70f, 0.25f}; // Thin glass lets high audio pass
         case SurfaceType::METAL:
-            return {0.92f, 0.08f, 2800.0f}; // Bright metallic ping
+            return {0.92f, 0.08f, 2800.0f, 0.18f, 0.85f}; // Heavy metal blocks audio strongly
         case SurfaceType::TILE:
-            return {0.90f, 0.12f, 2400.0f}; // Clean hard ceramic
+            return {0.90f, 0.12f, 2400.0f, 0.22f, 0.80f}; // Ceramic tile
         case SurfaceType::STONE:
-            return {0.80f, 0.20f, 2100.0f}; // Dense solid reflection
+            return {0.80f, 0.20f, 2100.0f, 0.12f, 0.90f}; // Dense stone wall = heavy occlusion & muffle
         case SurfaceType::WOOD:
-            return {0.58f, 0.40f, 1600.0f}; // Warm organic woody reflection
+            return {0.58f, 0.40f, 1600.0f, 0.48f, 0.55f}; // Wood walls let low/mid audio pass
         case SurfaceType::CARPET:
-            return {0.18f, 0.85f, 900.0f};  // Heavy absorption, muffled low-mid return
+            return {0.18f, 0.85f, 900.0f, 0.55f, 0.60f};  // Heavy absorption
         case SurfaceType::LEATHER_FABRIC:
-            return {0.22f, 0.80f, 1000.0f}; // Soft couch / armchair dampening
+            return {0.22f, 0.80f, 1000.0f, 0.60f, 0.50f}; // Soft couch upholstery
         case SurfaceType::GRASS:
-            return {0.15f, 0.90f, 800.0f};  // Highly absorbed open air lawn
+            return {0.15f, 0.90f, 800.0f, 0.80f, 0.30f};  // Open lawn / foliage
         default:
-            return {0.60f, 0.35f, 1800.0f};
+            return {0.60f, 0.35f, 1800.0f, 0.40f, 0.60f};
     }
 }
 
-// 3D Physical Object occupying space in the world (destructible for future gameplay)
+// 3D Physical Object occupying space in the world (authoritative server sync supported)
 struct WorldObject {
     int id = 0;
     std::string name;
-    float min_x, max_x;
-    float min_z, max_z;
+    float min_x = 0.0f, max_x = 0.0f;
+    float min_y = 0.0f, max_y = 0.0f; // North/South horizontal bounds
+    float min_z = 0.0f, max_z = 1.0f; // Vertical 3D altitude bounds
     float height = 1.0f;
     SurfaceType material = SurfaceType::WOOD;
     bool solidObstacle = true;
     bool destructible = true;
+    bool regeneration = true;         // Fixed: only respawns if explicitly enabled
+    int respawnTimeSeconds = 60;      // Fixed: configurable timer in seconds (not fixed to 1 min)
     int health = 100;
     int maxHealth = 100;
     bool isDestroyed = false;
-    unsigned long long destroyedAtMs = 0; // Timestamp when destroyed for 1-minute respawn
-    std::string soundAsset = "";          // Object's own sound emission (e.g. "objects/generator_hum.wav")
-    float soundVolume = 0.8f;             // Volume of sound emission
-    float soundRadius = 15.0f;            // Maximum audible distance in meters
+    unsigned long long destroyedAtMs = 0;
+    std::string soundAsset = "";
+    float soundVolume = 0.8f;
+    float soundRadius = 25.0f;        // 25 tiles hearing limit!
 
     bool contains(const Vector3& p) const {
         if (isDestroyed) return false;
-        return (min_x <= p.x && p.x <= max_x && min_z <= p.z && p.z <= max_z);
+        return (min_x <= p.x && p.x <= max_x &&
+                min_y <= p.y && p.y <= max_y &&
+                min_z <= p.z && p.z <= max_z);
     }
 
     Vector3 get_center() const {
-        return Vector3((min_x + max_x) * 0.5f, height * 0.5f, (min_z + max_z) * 0.5f);
+        return Vector3((min_x + max_x) * 0.5f, (min_y + max_y) * 0.5f, (min_z + max_z) * 0.5f);
     }
 
     void take_damage(int amount, unsigned long long nowMs = 0) {
-        if (isDestroyed) return;
+        if (isDestroyed || !destructible) return;
         health -= amount;
         if (health <= 0) {
             health = 0;
@@ -169,8 +211,10 @@ struct WorldObject {
         }
     }
 
-    bool check_regeneration(unsigned long long nowMs, unsigned long long regenDelayMs = 60000) {
-        if (isDestroyed && destroyedAtMs > 0 && (nowMs - destroyedAtMs >= regenDelayMs)) {
+    bool check_regeneration(unsigned long long nowMs) {
+        if (!regeneration || respawnTimeSeconds <= 0) return false;
+        unsigned long long delayMs = (unsigned long long)respawnTimeSeconds * 1000ULL;
+        if (isDestroyed && destroyedAtMs > 0 && (nowMs - destroyedAtMs >= delayMs)) {
             isDestroyed = false;
             health = maxHealth;
             solidObstacle = true;
@@ -181,21 +225,10 @@ struct WorldObject {
     }
 };
 
-struct SurfaceZone {
-    std::string name;
-    float min_x, max_x;
-    float min_z, max_z;
-    SurfaceType surface;
-
-    bool contains(const Vector3& p) const {
-        return (min_x <= p.x && p.x <= max_x && min_z <= p.z && p.z <= max_z);
-    }
-};
-
-// Represents a 2D line segment obstacle in XZ plane (walls, object boundaries)
+// Represents a 2D line segment obstacle in XY horizontal ground plane
 struct WallSegment {
-    float x1, z1;
-    float x2, z2;
+    float x1 = 0.0f, y1 = 0.0f;
+    float x2 = 0.0f, y2 = 0.0f;
     std::string name;
     SurfaceType material = SurfaceType::WOOD;
     float reflectivity = 0.60f;
@@ -203,37 +236,146 @@ struct WallSegment {
     int linkedObjectId = -1; // -1 if static wall, >= 0 if linked to a WorldObject
 };
 
+struct SurfaceZone {
+    std::string name;
+    float min_x = 0.0f, max_x = 0.0f;
+    float min_y = 0.0f, max_y = 0.0f;
+    SurfaceType surface = SurfaceType::WOOD;
+
+    bool contains(const Vector3& p) const {
+        return (min_x <= p.x && p.x <= max_x && min_y <= p.y && p.y <= max_y);
+    }
+};
+
 struct RoomRegion {
     std::string id;
     std::string name;
-    float min_x, max_x;
-    float min_z, max_z;
-    float reverb_rt60 = 0.40f;
+    float min_x = 0.0f, max_x = 0.0f;
+    float min_y = 0.0f, max_y = 0.0f;
+    float reverb_rt60 = 0.35f;
     bool isOutside = false;
-    std::string ambienceCategory = "indoor"; // "indoor", "outdoor", "nature", "urban"
-    std::string ambienceAsset = "";          // specific wav inside ambiances/ or environment/
-    float ambienceVolume = 0.5f;             // Volume of ambient bed
+    std::string ambienceCategory = "indoor";
+    std::string ambienceAsset = "";
+    float ambienceVolume = 0.5f;
+};
+
+// Travel Point: Moves avatar to child map (city, district, structure interior)
+struct TravelPoint {
+    std::string id;
+    std::string name;
+    float trigger_x = 0.0f;
+    float trigger_y = 0.0f;
+    float radius = 1.2f;
+    std::string target_map = "default_world.json";
+    Vector3 target_spawn{0.0f, 0.0f, 0.0f};
+
+    bool is_triggered(const Vector3& p) const {
+        float dx = p.x - trigger_x;
+        float dy = p.y - trigger_y;
+        return (dx * dx + dy * dy) <= (radius * radius);
+    }
+};
+
+// NPC Spawner definition for map instances
+struct SpawnerConfig {
+    std::string id;
+    std::string entityType = "npc";
+    Vector3 position;
+    float interval = 10.0f;
+    int maxCount = 1;
+    float wanderRadius = 5.0f;
+    std::string npcName = "Traveler";
+    std::string soundAsset = "footsteps/wood_1.wav";
+    std::string foleyAsset = "foley/regular/regular_1.wav";
+    std::string voiceSound = "auras/hum.wav";
+    std::string clothing = "regular";
+    std::string dialogue = "Greetings, traveler.";
+    std::string scriptName = "default_idle";
+};
+
+// Active Simulated NPC in the client
+struct ActiveNPC {
+    std::string id;
+    std::string name;
+    Vector3 position;
+    float yaw = 0.0f;
+    Vector3 homePosition;
+    float wanderRadius = 5.0f;
+    std::string soundAsset = "footsteps/wood_1.wav";
+    std::string foleyAsset = "foley/regular/regular_1.wav";
+    std::string clothing = "regular";
+    std::string dialogue = "Hello there.";
+    bool isMoving = false;
+};
+
+// Remote Player representation as a physical 1-tile obstacle
+struct RemotePlayerObstacle {
+    std::string playerId;
+    std::string username;
+    Vector3 position;
+    float tileSize = 1.0f; // Takes up 1 full tile!
+    ClothingType clothing = ClothingType::REGULAR;
+};
+
+// 3D Jump Controller with accessory multiplier hooks
+struct JumpController {
+    bool isJumping = false;
+    unsigned long long jumpStartTime = 0;
+    unsigned long long jumpDurationMs = 600; // 600ms natural parabolic jump
+    float baseJumpHeight = 3.0f;             // Default 3 tiles vertical height!
+    float accessoryMultiplier = 1.0f;        // Ready for boots, springs, gravity mods
+
+    void startJump(unsigned long long nowMs) {
+        if (isJumping) return;
+        isJumping = true;
+        jumpStartTime = nowMs;
+    }
+
+    float update(unsigned long long nowMs, bool& outLanded) {
+        outLanded = false;
+        if (!isJumping) return 0.0f;
+
+        unsigned long long elapsed = nowMs - jumpStartTime;
+        if (elapsed >= jumpDurationMs) {
+            isJumping = false;
+            outLanded = true;
+            return 0.0f;
+        }
+
+        // Parabolic arc: 4 * h * t * (1 - t)
+        float t = (float)elapsed / (float)jumpDurationMs;
+        float h = (baseJumpHeight * accessoryMultiplier) * 4.0f * t * (1.0f - t);
+        return (std::max)(0.0f, h);
+    }
 };
 
 struct WorldMap {
     std::string title = "Lounge & Great Outdoor Field";
-    Vector3 spawn_point{0.0f, 0.0f, -2.5f};
+    Vector3 spawn_point{0.0f, -2.5f, 0.0f};
     std::vector<WallSegment> walls;
     std::vector<SurfaceZone> surface_zones;
     std::vector<WorldObject> objects;
     std::vector<RoomRegion> regions;
+    std::vector<TravelPoint> travel_points;
+    std::vector<SpawnerConfig> spawners;
 
     SurfaceType get_surface_at(const Vector3& p) const {
         for (const auto& z : surface_zones) {
             if (z.contains(p)) return z.surface;
         }
-        // Default outside field is grass!
         return SurfaceType::GRASS;
     }
 
     const RoomRegion* get_region_at(const Vector3& p) const {
         for (const auto& r : regions) {
-            if (p.x >= r.min_x && p.x <= r.max_x && p.z >= r.min_z && p.z <= r.max_z) return &r;
+            if (p.x >= r.min_x && p.x <= r.max_x && p.y >= r.min_y && p.y <= r.max_y) return &r;
+        }
+        return nullptr;
+    }
+
+    const TravelPoint* get_triggered_travel_point(const Vector3& p) const {
+        for (const auto& tp : travel_points) {
+            if (tp.is_triggered(p)) return &tp;
         }
         return nullptr;
     }
@@ -242,19 +384,17 @@ struct WorldMap {
         for (const auto& obj : objects) {
             if (obj.isDestroyed) continue;
             float cx = (obj.min_x + obj.max_x) * 0.5f;
-            float cz = (obj.min_z + obj.max_z) * 0.5f;
+            float cy = (obj.min_y + obj.max_y) * 0.5f;
             float hx = (obj.max_x - obj.min_x) * 0.5f + threshold;
-            float hz = (obj.max_z - obj.min_z) * 0.5f + threshold;
-            if (std::abs(p.x - cx) <= hx && std::abs(p.z - cz) <= hz) {
+            float hy = (obj.max_y - obj.min_y) * 0.5f + threshold;
+            if (std::abs(p.x - cx) <= hx && std::abs(p.y - cy) <= hy) {
                 return &obj;
             }
         }
         return nullptr;
     }
 
-    // Attacks the object in front of the player (Spacebar Attack)
-    // Bare hands deal 25 damage per hit.
-    // Returns true if an object was struck.
+    // Attacks the object directly in front of the avatar (Spacebar Attack)
     bool attack_object_in_front(
         const Vector3& origin,
         float yawDeg,
@@ -267,7 +407,7 @@ struct WorldMap {
         unsigned long long nowMs = 0
     ) {
         float rad = yawDeg * (float)M_PI / 180.0f;
-        Vector3 dir(std::sin(rad), 0.0f, std::cos(rad));
+        Vector3 dir(std::sin(rad), std::cos(rad), 0.0f); // X=sin(yaw), Y=cos(yaw)
         float reach = 1.7f; // 1.7m bare hands reach
 
         int hitIndex = -1;
@@ -276,13 +416,13 @@ struct WorldMap {
         for (int i = 0; i < (int)objects.size(); ++i) {
             if (objects[i].isDestroyed) continue;
             float x1 = objects[i].min_x, x2 = objects[i].max_x;
-            float z1 = objects[i].min_z, z2 = objects[i].max_z;
+            float y1 = objects[i].min_y, y2 = objects[i].max_y;
 
             float segT;
-            if (intersect_ray_segment(origin.x, origin.z, dir.x, dir.z, x1, z1, x2, z1, segT) && segT < bestDist) { bestDist = segT; hitIndex = i; }
-            if (intersect_ray_segment(origin.x, origin.z, dir.x, dir.z, x2, z1, x2, z2, segT) && segT < bestDist) { bestDist = segT; hitIndex = i; }
-            if (intersect_ray_segment(origin.x, origin.z, dir.x, dir.z, x2, z2, x1, z2, segT) && segT < bestDist) { bestDist = segT; hitIndex = i; }
-            if (intersect_ray_segment(origin.x, origin.z, dir.x, dir.z, x1, z2, x1, z1, segT) && segT < bestDist) { bestDist = segT; hitIndex = i; }
+            if (intersect_ray_segment(origin.x, origin.y, dir.x, dir.y, x1, y1, x2, y1, segT) && segT < bestDist) { bestDist = segT; hitIndex = i; }
+            if (intersect_ray_segment(origin.x, origin.y, dir.x, dir.y, x2, y1, x2, y2, segT) && segT < bestDist) { bestDist = segT; hitIndex = i; }
+            if (intersect_ray_segment(origin.x, origin.y, dir.x, dir.y, x2, y2, x1, y2, segT) && segT < bestDist) { bestDist = segT; hitIndex = i; }
+            if (intersect_ray_segment(origin.x, origin.y, dir.x, dir.y, x1, y2, x1, y1, segT) && segT < bestDist) { bestDist = segT; hitIndex = i; }
         }
 
         if (hitIndex >= 0) {
@@ -292,7 +432,7 @@ struct WorldMap {
             out_mat = obj.material;
             out_destroyed = obj.isDestroyed;
             out_health_left = obj.health;
-            out_impact_pos = Vector3(origin.x + dir.x * bestDist, origin.y, origin.z + dir.z * bestDist);
+            out_impact_pos = Vector3(origin.x + dir.x * bestDist, origin.y + dir.y * bestDist, origin.z);
             return true;
         }
 
@@ -302,7 +442,7 @@ struct WorldMap {
     bool update_regenerations(unsigned long long nowMs, std::vector<std::string>& out_respawned_names) {
         bool any = false;
         for (auto& obj : objects) {
-            if (obj.check_regeneration(nowMs, 60000)) { // 1-minute (60,000ms) respawn
+            if (obj.check_regeneration(nowMs)) {
                 out_respawned_names.push_back(obj.name);
                 any = true;
             }
@@ -315,21 +455,21 @@ struct WorldMap {
         return objects[objId].isDestroyed;
     }
 
-    // Line segment intersection helper
+    // 2D Line segment intersection helper in horizontal XY plane
     static bool intersect_ray_segment(
-        float ox, float oz, float dx, float dz,
-        float x1, float z1, float x2, float z2,
+        float ox, float oy, float dx, float dy,
+        float x1, float y1, float x2, float y2,
         float& out_t
     ) {
         float wx = x2 - x1;
-        float wz = z2 - z1;
-        float denom = dx * wz - dz * wx;
+        float wy = y2 - y1;
+        float denom = dx * wy - dy * wx;
         if (std::abs(denom) < 1e-6f) return false;
 
         float qx = x1 - ox;
-        float qz = z1 - oz;
-        float t = (qx * wz - qz * wx) / denom;
-        float u = (qx * dz - qz * dx) / denom;
+        float qy = y1 - oy;
+        float t = (qx * wy - qy * wx) / denom;
+        float u = (qx * dy - qy * dx) / denom;
 
         if (t > 0.05f && u >= 0.0f && u <= 1.0f) {
             out_t = t;
@@ -347,17 +487,17 @@ struct WorldMap {
         float& out_reflectivity,
         std::string& out_hit_name
     ) const {
-        float len = std::sqrt(dir.x * dir.x + dir.z * dir.z);
+        float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
         if (len < 1e-5f) return max_dist;
-        float dx = dir.x / len, dz = dir.z / len;
+        float dx = dir.x / len, dy = dir.y / len;
         float best_t = max_dist;
 
         for (const auto& w : walls) {
-            if (w.isDoorwayOpening) continue; // Acoustic rays shoot straight through open doors!
+            if (w.isDoorwayOpening) continue;
             if (w.linkedObjectId >= 0 && is_object_destroyed(w.linkedObjectId)) continue;
 
             float t = 0.0f;
-            if (intersect_ray_segment(origin.x, origin.z, dx, dz, w.x1, w.z1, w.x2, w.z2, t)) {
+            if (intersect_ray_segment(origin.x, origin.y, dx, dy, w.x1, w.y1, w.x2, w.y2, t)) {
                 if (t < best_t) {
                     best_t = t;
                     out_material = w.material;
@@ -369,72 +509,138 @@ struct WorldMap {
         return best_t;
     }
 
-    // Player collision movement check against walls and solid objects
-    Vector3 try_move(const Vector3& from, const Vector3& to, bool& out_collided, std::string& out_obstacle_name) const {
+    // Physical Movement check against walls, solid objects, AND other players (1-tile footprint)
+    Vector3 try_move(
+        const Vector3& from,
+        const Vector3& to,
+        bool& out_collided,
+        std::string& out_obstacle_name,
+        const std::vector<RemotePlayerObstacle>& otherPlayers = {}
+    ) const {
         out_collided = false;
         out_obstacle_name = "";
 
         float move_dx = to.x - from.x;
-        float move_dz = to.z - from.z;
-        float move_dist = std::sqrt(move_dx * move_dx + move_dz * move_dz);
+        float move_dy = to.y - from.y;
+        float move_dist = std::sqrt(move_dx * move_dx + move_dy * move_dy);
         if (move_dist < 1e-5f) return from;
 
         float dir_x = move_dx / move_dist;
-        float dir_z = move_dz / move_dist;
+        float dir_y = move_dy / move_dist;
 
         float best_t = move_dist + 1.0f;
         Vector3 best_pos = to;
 
+        // 1. Collision with Walls and Static/Dynamic Map Objects
         for (const auto& w : walls) {
-            if (w.isDoorwayOpening) continue; // Walk freely through doorway!
+            if (w.isDoorwayOpening) continue;
             if (w.linkedObjectId >= 0 && is_object_destroyed(w.linkedObjectId)) continue;
 
             float t = 0.0f;
-            if (intersect_ray_segment(from.x, from.z, dir_x, dir_z, w.x1, w.z1, w.x2, w.z2, t)) {
-                if (t <= move_dist + 0.35f) { // 35cm body radius
+            if (intersect_ray_segment(from.x, from.y, dir_x, dir_y, w.x1, w.y1, w.x2, w.y2, t)) {
+                if (t <= move_dist + 0.35f) { // 35cm avatar collision margin
                     if (t < best_t) {
                         best_t = t;
                         out_collided = true;
                         out_obstacle_name = w.name;
                         float safe_dist = (std::max)(0.0f, t - 0.35f);
-                        best_pos = Vector3(from.x + dir_x * safe_dist, from.y, from.z + dir_z * safe_dist);
+                        best_pos = Vector3(from.x + dir_x * safe_dist, from.y + dir_y * safe_dist, to.z);
                     }
                 }
             }
         }
+
+        // 2. Physical Collision with other Connected Players (1 Tile = 1.0m Box Obstacle)
+        for (const auto& rp : otherPlayers) {
+            float px1 = rp.position.x - 0.5f;
+            float px2 = rp.position.x + 0.5f;
+            float py1 = rp.position.y - 0.5f;
+            float py2 = rp.position.y + 0.5f;
+
+            // Check if destination enters the other player's 1-tile body box
+            if (to.x >= px1 && to.x <= px2 && to.y >= py1 && to.y <= py2) {
+                out_collided = true;
+                out_obstacle_name = "Player " + rp.username;
+                return from; // Block completely at the boundary of their tile
+            }
+
+            // Ray segment check during movement sweep
+            float segT = 0.0f;
+            if ((intersect_ray_segment(from.x, from.y, dir_x, dir_y, px1, py1, px2, py1, segT) ||
+                 intersect_ray_segment(from.x, from.y, dir_x, dir_y, px2, py1, px2, py2, segT) ||
+                 intersect_ray_segment(from.x, from.y, dir_x, dir_y, px2, py2, px1, py2, segT) ||
+                 intersect_ray_segment(from.x, from.y, dir_x, dir_y, px1, py2, px1, py1, segT)) && segT <= move_dist + 0.40f) {
+                if (segT < best_t) {
+                    best_t = segT;
+                    out_collided = true;
+                    out_obstacle_name = "Player " + rp.username;
+                    float safe_dist = (std::max)(0.0f, segT - 0.40f);
+                    best_pos = Vector3(from.x + dir_x * safe_dist, from.y + dir_y * safe_dist, to.z);
+                }
+            }
+        }
+
         return best_pos;
     }
 
-    static SurfaceType string_to_surface(const std::string& s) {
-        if (s == "stone") return SurfaceType::STONE;
-        if (s == "carpet") return SurfaceType::CARPET;
-        if (s == "metal") return SurfaceType::METAL;
-        if (s == "grass") return SurfaceType::GRASS;
-        if (s == "tile") return SurfaceType::TILE;
-        if (s == "glass") return SurfaceType::GLASS;
-        if (s == "leather_fabric") return SurfaceType::LEATHER_FABRIC;
-        return SurfaceType::WOOD;
+    // Material-based Acoustic Occlusion Calculation between sound source and listener
+    // Returns transmission factor (0.0=silent/blocked, 1.0=clear line-of-sight) and lowPassMuffle (0.0 to 1.0)
+    void calculate_occlusion(
+        const Vector3& listenerPos,
+        const Vector3& sourcePos,
+        float& out_transmission,
+        float& out_lowPassMuffle
+    ) const {
+        out_transmission = 1.0f;
+        out_lowPassMuffle = 0.0f;
+
+        float dx = sourcePos.x - listenerPos.x;
+        float dy = sourcePos.y - listenerPos.y;
+        float dist = std::sqrt(dx * dx + dy * dy);
+        if (dist < 0.1f) return;
+
+        float dir_x = dx / dist;
+        float dir_y = dy / dist;
+
+        // Trace ray between listener and source against all solid walls and objects
+        for (const auto& w : walls) {
+            if (w.isDoorwayOpening) continue;
+            if (w.linkedObjectId >= 0 && is_object_destroyed(w.linkedObjectId)) continue;
+
+            float t = 0.0f;
+            if (intersect_ray_segment(listenerPos.x, listenerPos.y, dir_x, dir_y, w.x1, w.y1, w.x2, w.y2, t)) {
+                if (t > 0.1f && t < dist - 0.1f) {
+                    auto props = get_material_acoustics(w.material);
+                    out_transmission *= props.transmission;
+                    out_lowPassMuffle = (std::max)(out_lowPassMuffle, props.transmissionMuffle);
+                }
+            }
+        }
+
+        // Clamp minimum transmission so total silence doesn't happen unnaturally
+        out_transmission = (std::max)(0.04f, (std::min)(1.0f, out_transmission));
     }
 
-    // Load dynamic map from JSON (e.g. assets/maps/default_world.json)
-    bool load_from_json_file(const std::string& jsonPath) {
-        std::ifstream file(jsonPath);
-        if (!file.is_open()) return false;
+    // Dynamic Map Loader from JSON (supports both modern X,Y,Z and legacy maps)
+    bool load_from_json(const json& j) {
         try {
-            json j;
-            file >> j;
-
             title = j.value("title", "Fake-VR World");
             if (j.contains("spawn_point") && j["spawn_point"].is_object()) {
                 spawn_point.x = j["spawn_point"].value("x", 0.0f);
-                spawn_point.y = j["spawn_point"].value("y", 0.0f);
+                spawn_point.y = j["spawn_point"].value("y", j["spawn_point"].value("z", 0.0f));
                 spawn_point.z = j["spawn_point"].value("z", 0.0f);
+                if (j["spawn_point"].contains("y") && j["spawn_point"].contains("z")) {
+                    spawn_point.y = j["spawn_point"].value("y", 0.0f);
+                    spawn_point.z = j["spawn_point"].value("z", 0.0f);
+                }
             }
 
             walls.clear();
             surface_zones.clear();
             objects.clear();
             regions.clear();
+            travel_points.clear();
+            spawners.clear();
 
             // Load regions
             if (j.contains("regions") && j["regions"].is_array()) {
@@ -444,8 +650,8 @@ struct WorldMap {
                     reg.name = r.value("name", "Area");
                     reg.min_x = r.value("min_x", -10.0f);
                     reg.max_x = r.value("max_x", 10.0f);
-                    reg.min_z = r.value("min_z", -10.0f);
-                    reg.max_z = r.value("max_z", 10.0f);
+                    reg.min_y = r.value("min_y", r.value("min_z", -10.0f));
+                    reg.max_y = r.value("max_y", r.value("max_z", 10.0f));
                     reg.reverb_rt60 = r.value("reverb_rt60", 0.35f);
                     reg.isOutside = r.value("is_outside", false);
                     reg.ambienceCategory = r.value("ambience_category", "indoor");
@@ -462,47 +668,100 @@ struct WorldMap {
                     sz.name = z.value("name", "Zone");
                     sz.min_x = z.value("min_x", 0.0f);
                     sz.max_x = z.value("max_x", 0.0f);
-                    sz.min_z = z.value("min_z", 0.0f);
-                    sz.max_z = z.value("max_z", 0.0f);
+                    sz.min_y = z.value("min_y", z.value("min_z", 0.0f));
+                    sz.max_y = z.value("max_y", z.value("max_z", 0.0f));
                     sz.surface = string_to_surface(z.value("surface", "wood"));
                     surface_zones.push_back(sz);
                 }
             }
 
             int nextObjId = 0;
-            auto add_box_object = [&](const std::string& name, float x1, float x2, float z1, float z2, float h, SurfaceType mat, int hp, bool canDestroy, const std::string& soundAsset = "", float soundVol = 0.8f) {
+            auto add_box_object = [&](
+                const std::string& name,
+                float x1, float x2, float y1, float y2, float h,
+                SurfaceType mat, int hp, bool canDestroy, bool regen, int regenSec,
+                const std::string& soundAsset = "", float soundVol = 0.8f, float sndRadius = 25.0f
+            ) {
                 WorldObject obj;
                 obj.id = nextObjId++;
                 obj.name = name;
                 obj.min_x = x1; obj.max_x = x2;
-                obj.min_z = z1; obj.max_z = z2;
+                obj.min_y = y1; obj.max_y = y2;
+                obj.min_z = 0.0f; obj.max_z = h;
                 obj.height = h;
                 obj.material = mat;
                 obj.health = hp;
                 obj.maxHealth = hp;
                 obj.destructible = canDestroy;
+                obj.regeneration = regen;
+                obj.respawnTimeSeconds = regenSec;
                 obj.soundAsset = soundAsset;
                 obj.soundVolume = soundVol;
+                obj.soundRadius = sndRadius;
                 objects.push_back(obj);
 
                 auto props = get_material_acoustics(mat);
-                walls.push_back({x1, z1, x2, z1, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x2, z1, x2, z2, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x2, z2, x1, z2, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x1, z2, x1, z1, name, mat, props.reflectivity, false, obj.id});
+                walls.push_back({x1, y1, x2, y1, name, mat, props.reflectivity, false, obj.id});
+                walls.push_back({x2, y1, x2, y2, name, mat, props.reflectivity, false, obj.id});
+                walls.push_back({x2, y2, x1, y2, name, mat, props.reflectivity, false, obj.id});
+                walls.push_back({x1, y2, x1, y1, name, mat, props.reflectivity, false, obj.id});
             };
 
-            // Load nested structures (e.g. house as a building entity on the map)
+            // Load travel points (gateways to child maps/structures)
+            if (j.contains("travel_points") && j["travel_points"].is_array()) {
+                for (const auto& tp : j["travel_points"]) {
+                    TravelPoint t;
+                    t.id = tp.value("id", "travel");
+                    t.name = tp.value("name", "Travel Point");
+                    t.trigger_x = tp.value("trigger_x", tp.value("x", 0.0f));
+                    t.trigger_y = tp.value("trigger_y", tp.value("y", tp.value("z", 0.0f)));
+                    t.radius = tp.value("radius", 1.2f);
+                    t.target_map = tp.value("target_map", "default_world.json");
+                    if (tp.contains("target_spawn") && tp["target_spawn"].is_object()) {
+                        t.target_spawn.x = tp["target_spawn"].value("x", 0.0f);
+                        t.target_spawn.y = tp["target_spawn"].value("y", tp["target_spawn"].value("z", 0.0f));
+                        t.target_spawn.z = tp["target_spawn"].value("z", 0.0f);
+                    }
+                    travel_points.push_back(t);
+                }
+            }
+
+            // Load spawners (NPCs and dynamic entities)
+            if (j.contains("spawners") && j["spawners"].is_array()) {
+                for (const auto& sp : j["spawners"]) {
+                    SpawnerConfig sc;
+                    sc.id = sp.value("id", "spawner");
+                    sc.entityType = sp.value("entity_type", "npc");
+                    sc.position.x = sp.value("x", 0.0f);
+                    sc.position.y = sp.value("y", sp.value("z", 0.0f));
+                    sc.position.z = sp.value("z", 0.0f);
+                    sc.interval = sp.value("interval", 10.0f);
+                    sc.maxCount = sp.value("max_count", 1);
+                    sc.wanderRadius = sp.value("wander_radius", 5.0f);
+                    if (sp.contains("npc_config") && sp["npc_config"].is_object()) {
+                        const auto& cfg = sp["npc_config"];
+                        sc.npcName = cfg.value("name", "Traveler");
+                        sc.soundAsset = cfg.value("sound_asset", "footsteps/wood_1.wav");
+                        sc.foleyAsset = cfg.value("foley_asset", "foley/regular/regular_1.wav");
+                        sc.voiceSound = cfg.value("voice_sound", "auras/hum.wav");
+                        sc.clothing = cfg.value("clothing", "regular");
+                        sc.dialogue = cfg.value("dialogue", "Greetings, traveler.");
+                        sc.scriptName = cfg.value("script_name", "default_idle");
+                    }
+                    spawners.push_back(sc);
+                }
+            }
+
+            // Load nested structures (e.g. house or shop entities)
             if (j.contains("structures") && j["structures"].is_array()) {
                 for (const auto& s : j["structures"]) {
-                    // Load structure walls
                     if (s.contains("walls") && s["walls"].is_array()) {
                         for (const auto& w : s["walls"]) {
                             WallSegment ws;
                             ws.x1 = w.value("x1", 0.0f);
-                            ws.z1 = w.value("z1", 0.0f);
+                            ws.y1 = w.value("y1", w.value("z1", 0.0f));
                             ws.x2 = w.value("x2", 0.0f);
-                            ws.z2 = w.value("z2", 0.0f);
+                            ws.y2 = w.value("y2", w.value("z2", 0.0f));
                             ws.name = w.value("name", "Wall");
                             ws.material = string_to_surface(w.value("material", "wood"));
                             ws.reflectivity = w.value("reflectivity", 0.60f);
@@ -512,21 +771,22 @@ struct WorldMap {
                         }
                     }
 
-                    // Load interior objects inside the building
                     if (s.contains("interior_objects") && s["interior_objects"].is_array()) {
                         for (const auto& o : s["interior_objects"]) {
                             std::string oname = o.value("name", "Object");
-                            float x1 = o.value("min_x", 0.0f);
-                            float x2 = o.value("max_x", 0.0f);
-                            float z1 = o.value("min_z", 0.0f);
-                            float z2 = o.value("max_z", 0.0f);
+                            float x1 = o.value("min_x", 0.0f), x2 = o.value("max_x", 0.0f);
+                            float y1 = o.value("min_y", o.value("min_z", 0.0f));
+                            float y2 = o.value("max_y", o.value("max_z", 0.0f));
                             float h = o.value("height", 1.0f);
                             SurfaceType mat = string_to_surface(o.value("material", "wood"));
                             int hp = o.value("health", 100);
                             bool canDestroy = o.value("destructible", true);
+                            bool regen = o.value("regeneration", true);
+                            int regenSec = o.value("respawn_time_seconds", 60);
                             std::string snd = o.value("sound_asset", "");
                             float svol = o.value("sound_volume", 0.8f);
-                            add_box_object(oname, x1, x2, z1, z2, h, mat, hp, canDestroy, snd, svol);
+                            float srad = o.value("sound_radius", 25.0f);
+                            add_box_object(oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad);
                         }
                     }
                 }
@@ -536,17 +796,19 @@ struct WorldMap {
             if (j.contains("field_objects") && j["field_objects"].is_array()) {
                 for (const auto& o : j["field_objects"]) {
                     std::string oname = o.value("name", "Object");
-                    float x1 = o.value("min_x", 0.0f);
-                    float x2 = o.value("max_x", 0.0f);
-                    float z1 = o.value("min_z", 0.0f);
-                    float z2 = o.value("max_z", 0.0f);
+                    float x1 = o.value("min_x", 0.0f), x2 = o.value("max_x", 0.0f);
+                    float y1 = o.value("min_y", o.value("min_z", 0.0f));
+                    float y2 = o.value("max_y", o.value("max_z", 0.0f));
                     float h = o.value("height", 1.0f);
                     SurfaceType mat = string_to_surface(o.value("material", "wood"));
                     int hp = o.value("health", 100);
                     bool canDestroy = o.value("destructible", true);
+                    bool regen = o.value("regeneration", true);
+                    int regenSec = o.value("respawn_time_seconds", 60);
                     std::string snd = o.value("sound_asset", "");
                     float svol = o.value("sound_volume", 0.8f);
-                    add_box_object(oname, x1, x2, z1, z2, h, mat, hp, canDestroy, snd, svol);
+                    float srad = o.value("sound_radius", 25.0f);
+                    add_box_object(oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad);
                 }
             }
 
@@ -554,28 +816,30 @@ struct WorldMap {
             if (j.contains("objects") && j["objects"].is_array()) {
                 for (const auto& o : j["objects"]) {
                     std::string oname = o.value("name", "Object");
-                    float x1 = o.value("min_x", 0.0f);
-                    float x2 = o.value("max_x", 0.0f);
-                    float z1 = o.value("min_z", 0.0f);
-                    float z2 = o.value("max_z", 0.0f);
+                    float x1 = o.value("min_x", 0.0f), x2 = o.value("max_x", 0.0f);
+                    float y1 = o.value("min_y", o.value("min_z", 0.0f));
+                    float y2 = o.value("max_y", o.value("max_z", 0.0f));
                     float h = o.value("height", 1.0f);
                     SurfaceType mat = string_to_surface(o.value("material", "wood"));
                     int hp = o.value("health", 100);
                     bool canDestroy = o.value("destructible", true);
+                    bool regen = o.value("regeneration", true);
+                    int regenSec = o.value("respawn_time_seconds", 60);
                     std::string snd = o.value("sound_asset", "");
                     float svol = o.value("sound_volume", 0.8f);
-                    add_box_object(oname, x1, x2, z1, z2, h, mat, hp, canDestroy, snd, svol);
+                    float srad = o.value("sound_radius", 25.0f);
+                    add_box_object(oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad);
                 }
             }
 
-            // Load outer boundary walls
+            // Load boundary walls
             if (j.contains("boundary_walls") && j["boundary_walls"].is_array()) {
                 for (const auto& w : j["boundary_walls"]) {
                     WallSegment ws;
                     ws.x1 = w.value("x1", 0.0f);
-                    ws.z1 = w.value("z1", 0.0f);
+                    ws.y1 = w.value("y1", w.value("z1", 0.0f));
                     ws.x2 = w.value("x2", 0.0f);
-                    ws.z2 = w.value("z2", 0.0f);
+                    ws.y2 = w.value("y2", w.value("z2", 0.0f));
                     ws.name = w.value("name", "Boundary");
                     ws.material = string_to_surface(w.value("material", "wood"));
                     ws.reflectivity = w.value("reflectivity", 0.60f);
@@ -591,290 +855,81 @@ struct WorldMap {
         }
     }
 
-    // Load dynamic map from JSON object directly (e.g. from server packet)
-    bool load_from_json(const json& j) {
+    bool load_from_json_file(const std::string& jsonPath) {
+        std::ifstream file(jsonPath);
+        if (!file.is_open()) return false;
         try {
-            title = j.value("title", "Fake-VR World");
-            if (j.contains("spawn_point") && j["spawn_point"].is_object()) {
-                spawn_point.x = j["spawn_point"].value("x", 0.0f);
-                spawn_point.y = j["spawn_point"].value("y", 0.0f);
-                spawn_point.z = j["spawn_point"].value("z", 0.0f);
-            }
-
-            walls.clear();
-            surface_zones.clear();
-            objects.clear();
-            regions.clear();
-
-            // Load regions
-            if (j.contains("regions") && j["regions"].is_array()) {
-                for (const auto& r : j["regions"]) {
-                    RoomRegion reg;
-                    reg.id = r.value("id", "region");
-                    reg.name = r.value("name", "Area");
-                    reg.min_x = r.value("min_x", -10.0f);
-                    reg.max_x = r.value("max_x", 10.0f);
-                    reg.min_z = r.value("min_z", -10.0f);
-                    reg.max_z = r.value("max_z", 10.0f);
-                    reg.reverb_rt60 = r.value("reverb_rt60", 0.35f);
-                    reg.isOutside = r.value("is_outside", false);
-                    reg.ambienceCategory = r.value("ambience_category", "indoor");
-                    reg.ambienceAsset = r.value("ambience_asset", "");
-                    reg.ambienceVolume = r.value("ambience_volume", 0.5f);
-                    regions.push_back(reg);
-                }
-            }
-
-            // Load surface zones
-            if (j.contains("surface_zones") && j["surface_zones"].is_array()) {
-                for (const auto& z : j["surface_zones"]) {
-                    SurfaceZone sz;
-                    sz.name = z.value("name", "Zone");
-                    sz.min_x = z.value("min_x", 0.0f);
-                    sz.max_x = z.value("max_x", 0.0f);
-                    sz.min_z = z.value("min_z", 0.0f);
-                    sz.max_z = z.value("max_z", 0.0f);
-                    sz.surface = string_to_surface(z.value("surface", "wood"));
-                    surface_zones.push_back(sz);
-                }
-            }
-
-            int nextObjId = 0;
-            auto add_box_object = [&](const std::string& name, float x1, float x2, float z1, float z2, float h, SurfaceType mat, int hp, bool canDestroy, const std::string& soundAsset = "", float soundVol = 0.8f) {
-                WorldObject obj;
-                obj.id = nextObjId++;
-                obj.name = name;
-                obj.min_x = x1; obj.max_x = x2;
-                obj.min_z = z1; obj.max_z = z2;
-                obj.height = h;
-                obj.material = mat;
-                obj.health = hp;
-                obj.maxHealth = hp;
-                obj.destructible = canDestroy;
-                obj.soundAsset = soundAsset;
-                obj.soundVolume = soundVol;
-                objects.push_back(obj);
-
-                auto props = get_material_acoustics(mat);
-                walls.push_back({x1, z1, x2, z1, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x2, z1, x2, z2, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x2, z2, x1, z2, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x1, z2, x1, z1, name, mat, props.reflectivity, false, obj.id});
-            };
-
-            // Load nested structures (e.g. house as a building entity on the map)
-            if (j.contains("structures") && j["structures"].is_array()) {
-                for (const auto& s : j["structures"]) {
-                    if (s.contains("walls") && s["walls"].is_array()) {
-                        for (const auto& w : s["walls"]) {
-                            WallSegment ws;
-                            ws.x1 = w.value("x1", 0.0f);
-                            ws.z1 = w.value("z1", 0.0f);
-                            ws.x2 = w.value("x2", 0.0f);
-                            ws.z2 = w.value("z2", 0.0f);
-                            ws.name = w.value("name", "Wall");
-                            ws.material = string_to_surface(w.value("material", "wood"));
-                            ws.reflectivity = w.value("reflectivity", 0.60f);
-                            ws.isDoorwayOpening = w.value("is_doorway", false);
-                            ws.linkedObjectId = -1;
-                            walls.push_back(ws);
-                        }
-                    }
-
-                    if (s.contains("interior_objects") && s["interior_objects"].is_array()) {
-                        for (const auto& o : s["interior_objects"]) {
-                            std::string oname = o.value("name", "Object");
-                            float x1 = o.value("min_x", 0.0f);
-                            float x2 = o.value("max_x", 0.0f);
-                            float z1 = o.value("min_z", 0.0f);
-                            float z2 = o.value("max_z", 0.0f);
-                            float h = o.value("height", 1.0f);
-                            SurfaceType mat = string_to_surface(o.value("material", "wood"));
-                            int hp = o.value("health", 100);
-                            bool canDestroy = o.value("destructible", true);
-                            std::string snd = o.value("sound_asset", "");
-                            float svol = o.value("sound_volume", 0.8f);
-                            add_box_object(oname, x1, x2, z1, z2, h, mat, hp, canDestroy, snd, svol);
-                        }
-                    }
-                }
-            }
-
-            // Load direct/outdoor objects
-            if (j.contains("field_objects") && j["field_objects"].is_array()) {
-                for (const auto& o : j["field_objects"]) {
-                    std::string oname = o.value("name", "Object");
-                    float x1 = o.value("min_x", 0.0f);
-                    float x2 = o.value("max_x", 0.0f);
-                    float z1 = o.value("min_z", 0.0f);
-                    float z2 = o.value("max_z", 0.0f);
-                    float h = o.value("height", 1.0f);
-                    SurfaceType mat = string_to_surface(o.value("material", "wood"));
-                    int hp = o.value("health", 100);
-                    bool canDestroy = o.value("destructible", true);
-                    std::string snd = o.value("sound_asset", "");
-                    float svol = o.value("sound_volume", 0.8f);
-                    add_box_object(oname, x1, x2, z1, z2, h, mat, hp, canDestroy, snd, svol);
-                }
-            }
-
-            if (j.contains("objects") && j["objects"].is_array()) {
-                for (const auto& o : j["objects"]) {
-                    std::string oname = o.value("name", "Object");
-                    float x1 = o.value("min_x", 0.0f);
-                    float x2 = o.value("max_x", 0.0f);
-                    float z1 = o.value("min_z", 0.0f);
-                    float z2 = o.value("max_z", 0.0f);
-                    float h = o.value("height", 1.0f);
-                    SurfaceType mat = string_to_surface(o.value("material", "wood"));
-                    int hp = o.value("health", 100);
-                    bool canDestroy = o.value("destructible", true);
-                    std::string snd = o.value("sound_asset", "");
-                    float svol = o.value("sound_volume", 0.8f);
-                    add_box_object(oname, x1, x2, z1, z2, h, mat, hp, canDestroy, snd, svol);
-                }
-            }
-
-            // Load outer boundary walls
-            if (j.contains("boundary_walls") && j["boundary_walls"].is_array()) {
-                for (const auto& w : j["boundary_walls"]) {
-                    WallSegment ws;
-                    ws.x1 = w.value("x1", 0.0f);
-                    ws.z1 = w.value("z1", 0.0f);
-                    ws.x2 = w.value("x2", 0.0f);
-                    ws.z2 = w.value("z2", 0.0f);
-                    ws.name = w.value("name", "Boundary");
-                    ws.material = string_to_surface(w.value("material", "wood"));
-                    ws.reflectivity = w.value("reflectivity", 0.60f);
-                    ws.isDoorwayOpening = w.value("is_doorway", false);
-                    ws.linkedObjectId = -1;
-                    walls.push_back(ws);
-                }
-            }
-
-            return true;
+            json j;
+            file >> j;
+            return load_from_json(j);
         } catch (...) {
             return false;
         }
     }
 };
 
-// Builds a realistic lounge with a doorway opening that leads outside to a massive 100m x 100m grass field.
-// Real physical objects are scattered across the field, with destructibility support for future gameplay.
 inline WorldMap create_realistic_lounge() {
     WorldMap m;
     m.title = "Lounge & Great Outdoor Field";
-    m.spawn_point = Vector3(0.0f, 0.0f, -2.5f);
+    m.spawn_point = Vector3(0.0f, -2.5f, 0.0f);
 
-    // 1. Lounge Region
     m.regions.push_back({"lounge", "Living Room Lounge", -3.5f, 3.5f, -4.0f, 4.0f, 0.40f, false});
-    // 2. 100m x 100m Outside Grass Field Region (-50 to 50 X, 4 to 104 Z)
     m.regions.push_back({"outside", "Great Outdoor Field", -50.0f, 50.0f, 4.0f, 104.0f, 0.15f, true});
 
-    // Floor surfaces
     m.surface_zones.push_back({"Living Room Wood Floor", -3.5f, 3.5f, -4.0f, 4.0f, SurfaceType::WOOD});
     m.surface_zones.push_back({"Plush Rug Under Couch & Table", -2.0f, 2.0f, -1.8f, 1.8f, SurfaceType::CARPET});
-    // Massive 100x100 grass surface
     m.surface_zones.push_back({"Outdoor Grass Field", -50.0f, 50.0f, 4.0f, 104.0f, SurfaceType::GRASS});
 
     int nextObjId = 0;
-    auto add_box_object = [&](const std::string& name, float x1, float x2, float z1, float z2, float h, SurfaceType mat, int hp = 100, bool canDestroy = true) {
+    auto add_box_object = [&](const std::string& name, float x1, float x2, float y1, float y2, float h, SurfaceType mat, int hp = 100, bool canDestroy = true, int regenSec = 60) {
         WorldObject obj;
         obj.id = nextObjId++;
         obj.name = name;
         obj.min_x = x1; obj.max_x = x2;
-        obj.min_z = z1; obj.max_z = z2;
+        obj.min_y = y1; obj.max_y = y2;
+        obj.min_z = 0.0f; obj.max_z = h;
         obj.height = h;
         obj.material = mat;
         obj.health = hp;
+        obj.maxHealth = hp;
         obj.destructible = canDestroy;
+        obj.regeneration = true;
+        obj.respawnTimeSeconds = regenSec;
         m.objects.push_back(obj);
 
         auto props = get_material_acoustics(mat);
-        m.walls.push_back({x1, z1, x2, z1, name, mat, props.reflectivity, false, obj.id});
-        m.walls.push_back({x2, z1, x2, z2, name, mat, props.reflectivity, false, obj.id});
-        m.walls.push_back({x2, z2, x1, z2, name, mat, props.reflectivity, false, obj.id});
-        m.walls.push_back({x1, z2, x1, z1, name, mat, props.reflectivity, false, obj.id});
+        m.walls.push_back({x1, y1, x2, y1, name, mat, props.reflectivity, false, obj.id});
+        m.walls.push_back({x2, y1, x2, y2, name, mat, props.reflectivity, false, obj.id});
+        m.walls.push_back({x2, y2, x1, y2, name, mat, props.reflectivity, false, obj.id});
+        m.walls.push_back({x1, y2, x1, y1, name, mat, props.reflectivity, false, obj.id});
     };
 
-    // --- LOUNGE FURNITURE (Arranged comfortably without blocking the door or passage) ---
-    // 1. Large Upholstered Fabric Couch (Against West Wall, X: -3.2 to -1.4, Z: -1.0 to 1.0)
-    add_box_object("Fabric Sofa Couch", -3.2f, -1.4f, -1.0f, 1.0f, 0.85f, SurfaceType::LEATHER_FABRIC, 80, true);
+    // Lounge furniture
+    add_box_object("Fabric Sofa Couch", -3.2f, -1.4f, -1.0f, 1.0f, 0.85f, SurfaceType::LEATHER_FABRIC, 80, true, 45);
+    add_box_object("Solid Oak Coffee Table", -1.1f, 0.1f, -0.5f, 0.5f, 0.45f, SurfaceType::WOOD, 100, true, 60);
+    add_box_object("Metal Equipment Rack", 1.8f, 2.8f, -3.4f, -2.4f, 1.80f, SurfaceType::METAL, 250, true, 90);
+    add_box_object("Wooden Bookcase", 2.5f, 3.2f, -1.5f, 1.5f, 2.10f, SurfaceType::WOOD, 120, true, 60);
+    add_box_object("Glass Display Cabinet", 1.8f, 2.8f, 2.2f, 3.2f, 1.70f, SurfaceType::GLASS, 40, true, 30);
 
-    // 2. Oak Wood Coffee Table (In front of the couch, X: -1.1 to 0.1, Z: -0.5 to 0.5)
-    add_box_object("Solid Oak Coffee Table", -1.1f, 0.1f, -0.5f, 0.5f, 0.45f, SurfaceType::WOOD, 100, true);
-
-    // 3. Tall Heavy Metal Equipment Rack (In Southeast Corner, X: 1.8 to 2.8, Z: -3.4 to -2.4)
-    add_box_object("Metal Equipment Rack", 1.8f, 2.8f, -3.4f, -2.4f, 1.80f, SurfaceType::METAL, 250, true);
-
-    // 4. Large Solid Wooden Bookcase (Along East Wall, X: 2.5 to 3.2, Z: -1.5 to 1.5)
-    add_box_object("Wooden Bookcase", 2.5f, 3.2f, -1.5f, 1.5f, 2.10f, SurfaceType::WOOD, 120, true);
-
-    // 5. Tall Glass Display Cabinet (Northeast Corner, X: 1.8 to 2.8, Z: 2.2 to 3.2)
-    add_box_object("Glass Display Cabinet", 1.8f, 2.8f, 2.2f, 3.2f, 1.70f, SurfaceType::GLASS, 40, true);
-
-    // --- LOUNGE WALLS (-3.5 to 3.5 X, -4.0 to 4.0 Z) ---
-    // South Wall
+    // Walls
     m.walls.push_back({-3.5f, -4.0f, 3.5f, -4.0f, "South Plaster Wall", SurfaceType::WOOD, 0.60f, false, -1});
-    // East Wall
     m.walls.push_back({3.5f, -4.0f, 3.5f, 4.0f, "East Wall", SurfaceType::STONE, 0.75f, false, -1});
-    // West Wall
     m.walls.push_back({-3.5f, 4.0f, -3.5f, -4.0f, "West Wall", SurfaceType::STONE, 0.75f, false, -1});
-
-    // North Wall with Clear Wide Doorway to Outside:
-    // Left section of north wall
     m.walls.push_back({-3.5f, 4.0f, -1.0f, 4.0f, "North Wall", SurfaceType::WOOD, 0.60f, false, -1});
-    // CLEAR, UNBLOCKED DOORWAY OUTSIDE (-1.0m to 1.0m X at Z=4.0)
     m.walls.push_back({-1.0f, 4.0f, 1.0f, 4.0f, "Doorway to Outside Field", SurfaceType::WOOD, 0.0f, true, -1});
-    // Right section of north wall (with glass window)
     m.walls.push_back({1.0f, 4.0f, 2.5f, 4.0f, "Glass Bay Window", SurfaceType::GLASS, 0.96f, false, -1});
     m.walls.push_back({2.5f, 4.0f, 3.5f, 4.0f, "North Wall", SurfaceType::WOOD, 0.60f, false, -1});
 
-    // --- 100m x 100m OUTDOOR FIELD WITH REAL SCATTERED OBJECTS ---
-    // Outside Exterior Facade walls beside the lounge
     m.walls.push_back({-50.0f, 4.0f, -3.5f, 4.0f, "Lounge Exterior North Wall (West)", SurfaceType::STONE, 0.80f, false, -1});
     m.walls.push_back({3.5f, 4.0f, 50.0f, 4.0f, "Lounge Exterior North Wall (East)", SurfaceType::STONE, 0.80f, false, -1});
-
-    // Outer Boundaries of the 100x100 Field
     m.walls.push_back({-50.0f, 4.0f, -50.0f, 104.0f, "West Field Wooden Fence", SurfaceType::WOOD, 0.50f, false, -1});
     m.walls.push_back({50.0f, 4.0f, 50.0f, 104.0f, "East Field Stone Wall", SurfaceType::STONE, 0.75f, false, -1});
     m.walls.push_back({-50.0f, 104.0f, 50.0f, 104.0f, "North Field Tree Line Boundary", SurfaceType::GRASS, 0.25f, false, -1});
 
-    // SCATTERED REAL PHYSICAL OBJECTS ACROSS THE GRASS FIELD:
-    // 1. Solid Oak Wooden Bench (just outside the doorway at Z=8)
-    add_box_object("Wooden Park Bench", -1.2f, 1.2f, 7.5f, 8.3f, 0.9f, SurfaceType::WOOD, 100, true);
-
-    // 2. Heavy Steel Tool Shed (to the northeast at X=14, Z=18)
-    add_box_object("Steel Tool Shed", 12.0f, 16.0f, 16.0f, 20.0f, 2.5f, SurfaceType::METAL, 400, true);
-
-    // 3. Large Ancient Granite Boulder (to the northwest at X=-12, Z=15)
-    add_box_object("Granite Boulder", -14.0f, -10.0f, 13.0f, 17.0f, 1.8f, SurfaceType::STONE, 600, true);
-
-    // 4. Large Wooden Gazebo Pavilion (at X=0, Z=28)
-    add_box_object("Wooden Gazebo Post (West)", -4.0f, -3.2f, 26.0f, 26.8f, 3.0f, SurfaceType::WOOD, 150, true);
-    add_box_object("Wooden Gazebo Post (East)", 3.2f, 4.0f, 26.0f, 26.8f, 3.0f, SurfaceType::WOOD, 150, true);
-    add_box_object("Wooden Gazebo Table", -1.5f, 1.5f, 27.5f, 29.5f, 0.9f, SurfaceType::WOOD, 120, true);
-
-    // 5. Corrugated Metal Cargo Container (at X=-22, Z=35)
-    add_box_object("Metal Cargo Container", -25.0f, -19.0f, 33.0f, 41.0f, 2.6f, SurfaceType::METAL, 500, true);
-
-    // 6. Old Brick Well Structure (at X=18, Z=42)
-    add_box_object("Stone Water Well", 16.5f, 19.5f, 40.5f, 43.5f, 1.2f, SurfaceType::STONE, 350, true);
-
-    // 7. Large Wooden Lumber Stacks (at X=8, Z=55)
-    add_box_object("Lumber Stack Pile", 6.0f, 11.0f, 53.0f, 57.0f, 1.6f, SurfaceType::WOOD, 150, true);
-
-    // 8. Glass Greenhouse Nursery (at X=-18, Z=60)
-    add_box_object("Glass Greenhouse Nursery", -22.0f, -14.0f, 57.0f, 65.0f, 2.8f, SurfaceType::GLASS, 80, true);
-
-    // 9. Abandoned Steel Farm Tractor (at X=25, Z=72)
-    add_box_object("Steel Farm Tractor", 23.0f, 27.0f, 70.0f, 74.0f, 2.0f, SurfaceType::METAL, 350, true);
-
-    // 10. Massive Stone Monolith (at X=0, Z=85)
-    add_box_object("Ancient Stone Monolith", -2.5f, 2.5f, 83.0f, 87.0f, 4.5f, SurfaceType::STONE, 800, true);
-
-    // 11. Wooden Fruit Crates (at X=-8, Z=20)
-    add_box_object("Wooden Fruit Crates", -9.5f, -7.0f, 19.0f, 21.5f, 0.8f, SurfaceType::WOOD, 60, true);
+    // Field objects
+    add_box_object("Wooden Park Bench", -1.2f, 1.2f, 7.5f, 8.3f, 0.9f, SurfaceType::WOOD, 100, true, 60);
+    add_box_object("Steel Tool Shed", 12.0f, 16.0f, 16.0f, 20.0f, 2.5f, SurfaceType::METAL, 400, true, 120);
+    add_box_object("Granite Boulder", -14.0f, -10.0f, 13.0f, 17.0f, 1.8f, SurfaceType::STONE, 600, true, 180);
 
     return m;
 }

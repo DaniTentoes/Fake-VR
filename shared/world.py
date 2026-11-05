@@ -1,12 +1,16 @@
 """
-World and acoustic environment definitions.
-Includes raytraced room boundaries, surface material zones, and the Resonance Lounge.
+World and acoustic environment definitions for Fake-VR.
+Includes raytraced room boundaries, surface material zones, travel points, spawners, and the Resonance Lounge.
+Standardized 3D coordinates:
+  X = East/West
+  Y = North/South
+  Z = Altitude / Height
 """
 
 from __future__ import annotations
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from shared.models import Vector3, SurfaceType
 
 SPEED_OF_SOUND = 343.0  # meters per second in air at ~20C
@@ -18,21 +22,49 @@ class SurfaceZone:
     name: str
     min_x: float
     max_x: float
-    min_z: float
-    max_z: float
+    min_y: float
+    max_y: float
     surface: SurfaceType
 
     def contains(self, pos: Vector3) -> bool:
-        return (self.min_x <= pos.x <= self.max_x) and (self.min_z <= pos.z <= self.max_z)
+        return (self.min_x <= pos.x <= self.max_x) and (self.min_y <= pos.y <= self.max_y)
+
+
+@dataclass
+class TravelPoint:
+    """A gateway/portal moving the player to another map or structure."""
+    id: str
+    name: str
+    trigger_x: float
+    trigger_y: float
+    radius: float = 1.2
+    target_map_id: str = "lounge"
+    target_spawn: Vector3 = field(default_factory=Vector3)
+
+    def is_triggered(self, pos: Vector3) -> bool:
+        dx = pos.x - self.trigger_x
+        dy = pos.y - self.trigger_y
+        return (dx * dx + dy * dy) <= (self.radius * self.radius)
+
+
+@dataclass
+class Spawner:
+    """Spawns NPCs or dynamic world objects with customizable behavior."""
+    id: str
+    entity_type: str = "npc"  # "npc" or "object"
+    position: Vector3 = field(default_factory=Vector3)
+    interval: float = 10.0
+    max_count: int = 1
+    wander_radius: float = 5.0
+    npc_config: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class AcousticMirrorZone:
     """
     The Resonance Mirror Zone:
-    In VRChat, players dwell around mirrors. In Fake-VR, this is an Acoustic Chamber
-    with parabolic-like acoustic reflection where a player's own voice and clicks
-    return with heightened clarity and spatial presence.
+    Acoustic chamber with parabolic-like reflection where a player's
+    clicks and sound returns are heightened with crisp spatial presence.
     """
     name: str
     center: Vector3
@@ -41,22 +73,99 @@ class AcousticMirrorZone:
     reflection_clarity: float = 0.95
 
     def contains(self, pos: Vector3) -> bool:
-        return pos.distance_xz(self.center) <= self.radius
+        return pos.distance_xy(self.center) <= self.radius
 
 
 @dataclass
 class WallObstacle:
-    """A flat wall segment with sound absorption and reflection properties."""
+    """A flat wall segment with sound absorption, reflection, and occlusion properties."""
     start: Vector3
     end: Vector3
     height: float = 3.0
     material: SurfaceType = SurfaceType.STONE
-    reflectivity: float = 0.85  # Fraction of acoustic energy reflected
+    reflectivity: float = 0.85
+    is_doorway: bool = False
+    linked_object_id: int = -1
+
+
+@dataclass
+class ServerWorldObject:
+    """Authoritative physical entity on the server."""
+    id: int
+    name: str
+    min_x: float
+    max_x: float
+    min_y: float
+    max_y: float
+    min_z: float = 0.0
+    max_z: float = 1.0
+    height: float = 1.0
+    material: SurfaceType = SurfaceType.WOOD
+    solid_obstacle: bool = True
+    destructible: bool = True
+    regeneration: bool = True
+    respawn_time_seconds: int = 60
+    health: int = 100
+    max_health: int = 100
+    is_destroyed: bool = False
+    destroyed_timestamp: float = 0.0
+    sound_asset: str = ""
+    sound_volume: float = 0.8
+    sound_radius: float = 25.0
+
+    def contains(self, pos: Vector3) -> bool:
+        if self.is_destroyed:
+            return False
+        return (self.min_x <= pos.x <= self.max_x and
+                self.min_y <= pos.y <= self.max_y and
+                self.min_z <= pos.z <= self.max_z)
+
+    def take_damage(self, amount: int, now_time: float) -> bool:
+        if self.is_destroyed or not self.destructible:
+            return False
+        self.health = max(0, self.health - amount)
+        if self.health == 0:
+            self.is_destroyed = True
+            self.solid_obstacle = False
+            self.destroyed_timestamp = now_time
+            return True
+        return False
+
+    def check_respawn(self, now_time: float) -> bool:
+        if self.is_destroyed and self.regeneration and self.destroyed_timestamp > 0:
+            if (now_time - self.destroyed_timestamp) >= self.respawn_time_seconds:
+                self.is_destroyed = False
+                self.health = self.max_health
+                self.solid_obstacle = True
+                self.destroyed_timestamp = 0.0
+                return True
+        return False
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "min_x": self.min_x,
+            "max_x": self.max_x,
+            "min_y": self.min_y,
+            "max_y": self.max_y,
+            "height": self.height,
+            "material": self.material.value if hasattr(self.material, 'value') else str(self.material),
+            "health": self.health,
+            "max_health": self.max_health,
+            "destructible": self.destructible,
+            "regeneration": self.regeneration,
+            "respawn_time_seconds": self.respawn_time_seconds,
+            "is_destroyed": self.is_destroyed,
+            "sound_asset": self.sound_asset,
+            "sound_volume": self.sound_volume,
+            "sound_radius": self.sound_radius
+        }
 
 
 @dataclass
 class Room:
-    """Represents a virtual hangout world."""
+    """Represents a virtual map / region instance."""
     room_id: str
     title: str
     description: str
@@ -65,30 +174,28 @@ class Room:
     spawn_point: Vector3
     surface_zones: List[SurfaceZone] = field(default_factory=list)
     walls: List[WallObstacle] = field(default_factory=list)
+    travel_points: List[TravelPoint] = field(default_factory=list)
+    spawners: List[Spawner] = field(default_factory=list)
+    objects: List[ServerWorldObject] = field(default_factory=list)
     resonance_zone: Optional[AcousticMirrorZone] = None
     default_surface: SurfaceType = SurfaceType.WOOD
-    reverb_decay_time: float = 1.2  # RT60 in seconds
+    reverb_decay_time: float = 0.35
 
     def get_surface_at(self, pos: Vector3) -> SurfaceType:
-        """Determines the floor material at the given coordinate."""
         for zone in self.surface_zones:
             if zone.contains(pos):
                 return zone.surface
         return self.default_surface
 
     def clamp_position(self, pos: Vector3, margin: float = 0.3) -> Tuple[Vector3, bool]:
-        """
-        Clamps position inside room boundaries.
-        Returns (new_pos, did_collide_with_wall).
-        """
         collided = False
         new_x = pos.x
-        new_z = pos.z
+        new_y = pos.y
 
         min_x = self.min_bounds.x + margin
         max_x = self.max_bounds.x - margin
-        min_z = self.min_bounds.z + margin
-        max_z = self.max_bounds.z - margin
+        min_y = self.min_bounds.y + margin
+        max_y = self.max_bounds.y - margin
 
         if new_x < min_x:
             new_x = min_x
@@ -97,150 +204,45 @@ class Room:
             new_x = max_x
             collided = True
 
-        if new_z < min_z:
-            new_z = min_z
+        if new_y < min_y:
+            new_y = min_y
             collided = True
-        elif new_z > max_z:
-            new_z = max_z
+        elif new_y > max_y:
+            new_y = max_y
             collided = True
 
-        return Vector3(new_x, pos.y, new_z), collided
-
-    def cast_echolocation_ray(self, origin: Vector3, direction: Vector3, max_dist: float = 30.0) -> Tuple[float, SurfaceType]:
-        """
-        Casts a ray to find the nearest wall collision for echolocation sound returns.
-        Returns (distance_in_meters, surface_material).
-        """
-        d = direction.normalized()
-        best_t = max_dist
-        hit_surface = SurfaceType.STONE
-
-        # Test against 4 bounding walls
-        # X planes
-        if abs(d.x) > 1e-5:
-            # Min X wall
-            t1 = (self.min_bounds.x - origin.x) / d.x
-            if 0 < t1 < best_t:
-                best_t = t1
-                hit_surface = SurfaceType.WOOD
-            # Max X wall
-            t2 = (self.max_bounds.x - origin.x) / d.x
-            if 0 < t2 < best_t:
-                best_t = t2
-                hit_surface = SurfaceType.WOOD
-
-        # Z planes
-        if abs(d.z) > 1e-5:
-            # Min Z wall
-            t3 = (self.min_bounds.z - origin.z) / d.z
-            if 0 < t3 < best_t:
-                best_t = t3
-                hit_surface = SurfaceType.STONE
-            # Max Z wall
-            t4 = (self.max_bounds.z - origin.z) / d.z
-            if 0 < t4 < best_t:
-                best_t = t4
-                hit_surface = SurfaceType.STONE
-
-        return best_t, hit_surface
+        return Vector3(new_x, new_y, pos.z), collided
 
 
-# --- PRECONFIGURED WORLDS ---
-
-def create_resonance_lounge() -> Room:
-    """
-    The Resonance Lounge:
-    The flagship hangout room. 14m x 10m x 4m.
-    Features:
-    - Center polished oak floor
-    - Plush carpet conversational lounge in the west wing
-    - Marble entryway in the east
-    - The Resonance Mirror (Acoustic Chamber) at the north wall with parabolic sound reflections
-    """
+def create_default_lounge() -> Room:
+    """Creates the standard initial lounge room."""
     return Room(
-        room_id="resonance_lounge",
-        title="The Resonance Lounge",
-        description="A warm, acoustic hangout space with rich reflections and a central Resonance Mirror.",
-        min_bounds=Vector3(-7.0, 0.0, -5.0),
-        max_bounds=Vector3(7.0, 4.0, 5.0),
-        spawn_point=Vector3(0.0, 0.0, -3.0),
-        default_surface=SurfaceType.WOOD,
-        reverb_decay_time=1.4,
-        resonance_zone=AcousticMirrorZone(
-            name="Resonance Mirror",
-            center=Vector3(0.0, 0.0, 3.5),
-            radius=2.5,
-            reverberation_boost=2.2,
-            reflection_clarity=1.0
-        ),
+        room_id="lounge",
+        title="Lounge & Great Outdoor Field",
+        description="A residential lounge connected to a wide 100m x 100m outdoor terrain.",
+        min_bounds=Vector3(-50.0, -4.0, 0.0),
+        max_bounds=Vector3(50.0, 104.0, 10.0),
+        spawn_point=Vector3(0.0, -2.5, 0.0),
         surface_zones=[
-            # West lounge area: plush carpet
-            SurfaceZone(
-                name="Carpet Lounge",
-                min_x=-6.5, max_x=-2.0,
-                min_z=-4.5, max_z=4.5,
-                surface=SurfaceType.CARPET
-            ),
-            # East entrance: polished stone/tile
-            SurfaceZone(
-                name="Stone Entryway",
-                min_x=2.5, max_x=6.5,
-                min_z=-4.5, max_z=4.5,
-                surface=SurfaceType.STONE
-            ),
-            # North mirror zone: smooth resonance floor (wood/tile mix)
-            SurfaceZone(
-                name="Mirror Stage",
-                min_x=-2.0, max_x=2.0,
-                min_z=2.0, max_z=4.8,
-                surface=SurfaceType.WOOD
-            ),
-        ]
-    )
-
-
-def create_acoustic_courtyard() -> Room:
-    """
-    The Acoustic Courtyard:
-    An expansive open-air park (40m x 40m).
-    Features gravel paths, soft grass lawns, and an acoustic water beacon in the center.
-    """
-    return Room(
-        room_id="acoustic_courtyard",
-        title="The Acoustic Courtyard",
-        description="An expansive outdoor courtyard with grass lawns, stone pathways, and gentle breeze.",
-        min_bounds=Vector3(-20.0, 0.0, -20.0),
-        max_bounds=Vector3(20.0, 10.0, 20.0),
-        spawn_point=Vector3(0.0, 0.0, -12.0),
+            SurfaceZone("Living Room Wood Floor", -3.5, 3.5, -4.0, 4.0, SurfaceType.WOOD),
+            SurfaceZone("Plush Rug", -2.0, 2.0, -1.8, 1.8, SurfaceType.CARPET),
+            SurfaceZone("Outdoor Grass Field", -50.0, 50.0, 4.0, 104.0, SurfaceType.GRASS),
+        ],
+        walls=[
+            WallObstacle(Vector3(-3.5, -4.0, 0.0), Vector3(3.5, -4.0, 0.0), material=SurfaceType.WOOD, reflectivity=0.60),
+            WallObstacle(Vector3(3.5, -4.0, 0.0), Vector3(3.5, 4.0, 0.0), material=SurfaceType.STONE, reflectivity=0.75),
+            WallObstacle(Vector3(-3.5, 4.0, 0.0), Vector3(-3.5, -4.0, 0.0), material=SurfaceType.STONE, reflectivity=0.75),
+            WallObstacle(Vector3(-3.5, 4.0, 0.0), Vector3(-1.0, 4.0, 0.0), material=SurfaceType.WOOD, reflectivity=0.60),
+            WallObstacle(Vector3(-1.0, 4.0, 0.0), Vector3(1.0, 4.0, 0.0), material=SurfaceType.WOOD, reflectivity=0.0, is_doorway=True),
+            WallObstacle(Vector3(1.0, 4.0, 0.0), Vector3(2.5, 4.0, 0.0), material=SurfaceType.GLASS, reflectivity=0.96),
+            WallObstacle(Vector3(2.5, 4.0, 0.0), Vector3(3.5, 4.0, 0.0), material=SurfaceType.WOOD, reflectivity=0.60),
+        ],
         default_surface=SurfaceType.GRASS,
-        reverb_decay_time=0.6,
-        surface_zones=[
-            # Center stone plaza
-            SurfaceZone(
-                name="Central Plaza",
-                min_x=-5.0, max_x=5.0,
-                min_z=-5.0, max_z=5.0,
-                surface=SurfaceType.STONE
-            ),
-            # Stone walkway connecting North to South
-            SurfaceZone(
-                name="South Path",
-                min_x=-1.5, max_x=1.5,
-                min_z=-19.0, max_z=-5.0,
-                surface=SurfaceType.STONE
-            ),
-            # Stone walkway connecting East to West
-            SurfaceZone(
-                name="East-West Path",
-                min_x=-19.0, max_x=19.0,
-                min_z=-1.5, max_z=1.5,
-                surface=SurfaceType.STONE
-            )
-        ]
+        reverb_decay_time=0.35
     )
 
 
-WORLD_REGISTRY = {
-    "resonance_lounge": create_resonance_lounge(),
-    "acoustic_courtyard": create_acoustic_courtyard()
+WORLD_REGISTRY: Dict[str, Room] = {
+    "lounge": create_default_lounge(),
+    "resonance_lounge": create_default_lounge()
 }

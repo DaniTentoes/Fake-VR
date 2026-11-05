@@ -15,6 +15,7 @@
 #include <queue>
 #include <iostream>
 #include <sstream>
+#include <unordered_map>
 
 using json = nlohmann::json;
 
@@ -29,13 +30,14 @@ struct RemotePlayer {
     float yaw = 0.0f;
     SurfaceType surface = SurfaceType::WOOD;
     ClothingType clothing = ClothingType::REGULAR;
+    bool isJumping = false;
 };
 
 struct RemoteAttackEvent {
     std::string playerId;
     std::string username;
     std::string targetName;
-    SurfaceType material;
+    SurfaceType material = SurfaceType::WOOD;
     bool destroyed = false;
     Vector3 impactPos;
 };
@@ -49,8 +51,22 @@ struct RemoteEchoEvent {
 struct RemoteStepEvent {
     std::string playerId;
     Vector3 position;
-    SurfaceType surface;
-    ClothingType clothing;
+    SurfaceType surface = SurfaceType::WOOD;
+    ClothingType clothing = ClothingType::REGULAR;
+};
+
+struct ObjectStateEvent {
+    int objectId = -1;
+    std::string name;
+    int health = 0;
+    int maxHealth = 100;
+    bool isDestroyed = false;
+};
+
+struct NPCInteractResponse {
+    std::string speakerName;
+    std::string dialogue;
+    std::string soundAsset;
 };
 
 class NetworkClient {
@@ -77,7 +93,6 @@ public:
             return false;
         }
 
-        // Set TCP_NODELAY for instant spatial audio packet delivery
         int flag = 1;
         setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, sizeof(flag));
 
@@ -107,11 +122,9 @@ public:
         connected = true;
         std::cout << "[Network]: Connected! Sending handshake...\n";
 
-        // Send c2s_join
         std::string joinPacket = "{\"type\":\"c2s_join\",\"payload\":{\"username\":\"" + escapeJson(username) + "\",\"room_id\":\"lounge\",\"aura\":\"none\"}}\n";
         sendRaw(joinPacket);
 
-        // Start background receive thread
         recvThread = std::thread(&NetworkClient::receiveLoop, this);
         return true;
     }
@@ -133,8 +146,8 @@ public:
 
     bool isConnected() const { return connected; }
 
-    // Broadcast local player step
-    void sendMove(const Vector3& pos, float yaw, SurfaceType surface, ClothingType clothes, bool isMoving) {
+    // Broadcast local player movement (with X, Y, Z and jumping flag)
+    void sendMove(const Vector3& pos, float yaw, SurfaceType surface, ClothingType clothes, bool isMoving, bool isJumping = false) {
         if (!connected) return;
         std::string sName = surface_to_string(surface);
         std::string cName = (clothes == ClothingType::ARMOR) ? "armor" : ((clothes == ClothingType::NAKED) ? "naked" : "regular");
@@ -145,6 +158,7 @@ public:
            << "\"yaw\":" << yaw << ","
            << "\"pitch\":0.0,"
            << "\"is_moving\":" << (isMoving ? "true" : "false") << ","
+           << "\"is_jumping\":" << (isJumping ? "true" : "false") << ","
            << "\"surface\":\"" << sName << "\","
            << "\"clothing\":\"" << cName << "\""
            << "}}\n";
@@ -162,21 +176,55 @@ public:
         sendRaw(ss.str());
     }
 
-    // Broadcast local player attack
-    void sendAttack(const std::string& targetName, SurfaceType mat, bool destroyed, const Vector3& impactPos) {
+    // Broadcast attack to server
+    void sendAttack(const std::string& targetName, SurfaceType mat, int damage, const Vector3& impactPos) {
         if (!connected) return;
         std::string sMat = surface_to_string(mat);
         std::ostringstream ss;
         ss << "{\"type\":\"c2s_attack\",\"payload\":{"
            << "\"target_name\":\"" << escapeJson(targetName) << "\","
            << "\"material\":\"" << sMat << "\","
-           << "\"destroyed\":" << (destroyed ? "true" : "false") << ","
+           << "\"damage\":" << damage << ","
            << "\"impact_pos\":{\"x\":" << impactPos.x << ",\"y\":" << impactPos.y << ",\"z\":" << impactPos.z << "}"
            << "}}\n";
         sendRaw(ss.str());
     }
 
-    // Pop events for the main thread audio engine & screen reader
+    // Building tool: erect a wall marked between Point A and Point B
+    void sendBuildWall(float x1, float y1, float x2, float y2, SurfaceType mat, const std::string& name) {
+        if (!connected) return;
+        std::ostringstream ss;
+        ss << "{\"type\":\"c2s_build_wall\",\"payload\":{"
+           << "\"x1\":" << x1 << ",\"y1\":" << y1 << ","
+           << "\"x2\":" << x2 << ",\"y2\":" << y2 << ","
+           << "\"material\":\"" << surface_to_string(mat) << "\","
+           << "\"name\":\"" << escapeJson(name) << "\""
+           << "}}\n";
+        sendRaw(ss.str());
+    }
+
+    // Travel to another map via a TravelPoint
+    void sendTravel(const std::string& targetMapId, const Vector3& spawnPos) {
+        if (!connected) return;
+        std::ostringstream ss;
+        ss << "{\"type\":\"c2s_travel\",\"payload\":{"
+           << "\"target_map\":\"" << escapeJson(targetMapId) << "\","
+           << "\"spawn\":{\"x\":" << spawnPos.x << ",\"y\":" << spawnPos.y << ",\"z\":" << spawnPos.z << "}"
+           << "}}\n";
+        sendRaw(ss.str());
+    }
+
+    // Interact with an NPC
+    void sendInteract(const std::string& targetId) {
+        if (!connected) return;
+        std::ostringstream ss;
+        ss << "{\"type\":\"c2s_interact\",\"payload\":{"
+           << "\"target_id\":\"" << escapeJson(targetId) << "\""
+           << "}}\n";
+        sendRaw(ss.str());
+    }
+
+    // Event Pollers
     bool pollStep(RemoteStepEvent& outEv) {
         std::lock_guard<std::mutex> lock(eventMutex);
         if (stepQueue.empty()) return false;
@@ -190,6 +238,14 @@ public:
         if (attackQueue.empty()) return false;
         outEv = attackQueue.front();
         attackQueue.pop();
+        return true;
+    }
+
+    bool pollObjectState(ObjectStateEvent& outEv) {
+        std::lock_guard<std::mutex> lock(eventMutex);
+        if (objectStateQueue.empty()) return false;
+        outEv = objectStateQueue.front();
+        objectStateQueue.pop();
         return true;
     }
 
@@ -210,6 +266,14 @@ public:
         return true;
     }
 
+    bool pollNPCInteract(NPCInteractResponse& outResp) {
+        std::lock_guard<std::mutex> lock(eventMutex);
+        if (npcResponseQueue.empty()) return false;
+        outResp = npcResponseQueue.front();
+        npcResponseQueue.pop();
+        return true;
+    }
+
     std::string pollAnnouncement() {
         std::lock_guard<std::mutex> lock(eventMutex);
         if (announcements.empty()) return "";
@@ -227,6 +291,27 @@ public:
         return list;
     }
 
+    // Returns physical 1-tile player obstacles for movement blocking and echolocation reflection
+    std::vector<RemotePlayerObstacle> getRemotePlayerObstacles() {
+        std::lock_guard<std::mutex> lock(playerMutex);
+        std::vector<RemotePlayerObstacle> list;
+        for (const auto& kv : players) {
+            RemotePlayerObstacle obs;
+            obs.playerId = kv.second.id;
+            obs.username = kv.second.username;
+            obs.position = kv.second.position;
+            obs.tileSize = 1.0f; // Exactly 1 tile physical collision obstacle!
+            obs.clothing = kv.second.clothing;
+            list.push_back(obs);
+        }
+        return list;
+    }
+
+    std::vector<ActiveNPC> getActiveNPCs() {
+        std::lock_guard<std::mutex> lock(npcMutex);
+        return activeNPCs;
+    }
+
 private:
     std::string myUsername;
     std::string myPlayerId;
@@ -237,10 +322,15 @@ private:
     std::mutex playerMutex;
     std::unordered_map<std::string, RemotePlayer> players;
 
+    std::mutex npcMutex;
+    std::vector<ActiveNPC> activeNPCs;
+
     std::mutex eventMutex;
     std::queue<RemoteStepEvent> stepQueue;
     std::queue<RemoteAttackEvent> attackQueue;
+    std::queue<ObjectStateEvent> objectStateQueue;
     std::queue<RemoteEchoEvent> echoQueue;
+    std::queue<NPCInteractResponse> npcResponseQueue;
     std::queue<std::string> announcements;
     bool hasPendingMap = false;
     json pendingMapJson;
@@ -308,8 +398,12 @@ private:
                             rp.username = p.value("username", "Player");
                             if (p.contains("position") && p["position"].is_object()) {
                                 rp.position.x = p["position"].value("x", 0.0f);
-                                rp.position.y = p["position"].value("y", 0.0f);
+                                rp.position.y = p["position"].value("y", p["position"].value("z", 0.0f));
                                 rp.position.z = p["position"].value("z", 0.0f);
+                                if (p["position"].contains("y") && p["position"].contains("z")) {
+                                    rp.position.y = p["position"].value("y", 0.0f);
+                                    rp.position.z = p["position"].value("z", 0.0f);
+                                }
                             }
                             players[pid] = rp;
                         }
@@ -328,8 +422,12 @@ private:
                     rp.username = uname;
                     if (p.contains("position") && p["position"].is_object()) {
                         rp.position.x = p["position"].value("x", 0.0f);
-                        rp.position.y = p["position"].value("y", 0.0f);
+                        rp.position.y = p["position"].value("y", p["position"].value("z", 0.0f));
                         rp.position.z = p["position"].value("z", 0.0f);
+                        if (p["position"].contains("y") && p["position"].contains("z")) {
+                            rp.position.y = p["position"].value("y", 0.0f);
+                            rp.position.z = p["position"].value("z", 0.0f);
+                        }
                     }
                     players[pid] = rp;
                 }
@@ -348,10 +446,15 @@ private:
                             if (p.contains("username")) rp.username = p.value("username", "Player");
                             if (p.contains("position") && p["position"].is_object()) {
                                 rp.position.x = p["position"].value("x", 0.0f);
-                                rp.position.y = p["position"].value("y", 0.0f);
+                                rp.position.y = p["position"].value("y", p["position"].value("z", 0.0f));
                                 rp.position.z = p["position"].value("z", 0.0f);
+                                if (p["position"].contains("y") && p["position"].contains("z")) {
+                                    rp.position.y = p["position"].value("y", 0.0f);
+                                    rp.position.z = p["position"].value("z", 0.0f);
+                                }
                             }
                             rp.yaw = p.value("yaw", 0.0f);
+                            rp.isJumping = p.value("is_jumping", false);
                         }
                     }
                 }
@@ -373,19 +476,17 @@ private:
                 Vector3 pos;
                 if (payload.contains("position") && payload["position"].is_object()) {
                     pos.x = payload["position"].value("x", 0.0f);
-                    pos.y = payload["position"].value("y", 0.0f);
+                    pos.y = payload["position"].value("y", payload["position"].value("z", 0.0f));
                     pos.z = payload["position"].value("z", 0.0f);
+                    if (payload["position"].contains("y") && payload["position"].contains("z")) {
+                        pos.y = payload["position"].value("y", 0.0f);
+                        pos.z = payload["position"].value("z", 0.0f);
+                    }
                 }
                 std::string sSurf = payload.value("surface", "wood");
                 std::string sCloth = payload.value("clothing", "regular");
 
-                SurfaceType st = SurfaceType::WOOD;
-                if (sSurf == "stone") st = SurfaceType::STONE;
-                else if (sSurf == "carpet") st = SurfaceType::CARPET;
-                else if (sSurf == "grass") st = SurfaceType::GRASS;
-                else if (sSurf == "tile") st = SurfaceType::TILE;
-                else if (sSurf == "metal") st = SurfaceType::METAL;
-
+                SurfaceType st = string_to_surface(sSurf);
                 ClothingType ct = ClothingType::REGULAR;
                 if (sCloth == "armor") ct = ClothingType::ARMOR;
                 else if (sCloth == "naked") ct = ClothingType::NAKED;
@@ -395,6 +496,7 @@ private:
                     players[pid].position = pos;
                     players[pid].surface = st;
                     players[pid].clothing = ct;
+                    players[pid].isJumping = payload.value("is_jumping", false);
                 }
 
                 std::lock_guard<std::mutex> lock(eventMutex);
@@ -407,7 +509,7 @@ private:
                 Vector3 pos;
                 if (payload.contains("position") && payload["position"].is_object()) {
                     pos.x = payload["position"].value("x", 0.0f);
-                    pos.y = payload["position"].value("y", 0.0f);
+                    pos.y = payload["position"].value("y", payload["position"].value("z", 0.0f));
                     pos.z = payload["position"].value("z", 0.0f);
                 }
                 float yaw = payload.value("yaw", 0.0f);
@@ -417,30 +519,76 @@ private:
             }
             else if (type == "s2c_attack_event") {
                 std::string pid = payload.value("player_id", "");
-                if (pid == myPlayerId) return;
-
                 RemoteAttackEvent ev;
                 ev.playerId = pid;
                 ev.username = payload.value("username", "Someone");
                 ev.targetName = payload.value("target_name", "object");
                 std::string sMat = payload.value("material", "wood");
-                ev.material = SurfaceType::WOOD;
-                if (sMat == "glass") ev.material = SurfaceType::GLASS;
-                else if (sMat == "metal") ev.material = SurfaceType::METAL;
-                else if (sMat == "stone") ev.material = SurfaceType::STONE;
-
+                ev.material = string_to_surface(sMat);
                 ev.destroyed = payload.value("destroyed", false);
                 if (payload.contains("impact_pos") && payload["impact_pos"].is_object()) {
                     ev.impactPos.x = payload["impact_pos"].value("x", 0.0f);
-                    ev.impactPos.y = payload["impact_pos"].value("y", 0.0f);
+                    ev.impactPos.y = payload["impact_pos"].value("y", payload["impact_pos"].value("z", 0.0f));
                     ev.impactPos.z = payload["impact_pos"].value("z", 0.0f);
                 }
 
                 std::lock_guard<std::mutex> lock(eventMutex);
                 attackQueue.push(ev);
-                if (ev.destroyed) {
+                if (ev.destroyed && pid != myPlayerId) {
                     announcements.push(ev.username + " destroyed " + ev.targetName + "!");
                 }
+            }
+            else if (type == "s2c_object_state" || type == "s2c_object_respawned") {
+                ObjectStateEvent ev;
+                ev.objectId = payload.value("id", -1);
+                ev.name = payload.value("name", "Object");
+                ev.health = payload.value("health", 100);
+                ev.maxHealth = payload.value("max_health", 100);
+                ev.isDestroyed = payload.value("is_destroyed", false);
+
+                std::lock_guard<std::mutex> lock(eventMutex);
+                objectStateQueue.push(ev);
+                if (type == "s2c_object_respawned") {
+                    announcements.push(ev.name + " has regenerated.");
+                }
+            }
+            else if (type == "s2c_npc_update") {
+                if (payload.contains("npcs") && payload["npcs"].is_array()) {
+                    std::lock_guard<std::mutex> nLock(npcMutex);
+                    activeNPCs.clear();
+                    for (const auto& n : payload["npcs"]) {
+                        ActiveNPC an;
+                        an.id = n.value("id", "npc");
+                        an.name = n.value("name", "NPC");
+                        if (n.contains("position") && n["position"].is_object()) {
+                            an.position.x = n["position"].value("x", 0.0f);
+                            an.position.y = n["position"].value("y", 0.0f);
+                            an.position.z = n["position"].value("z", 0.0f);
+                        }
+                        an.yaw = n.value("yaw", 0.0f);
+                        an.soundAsset = n.value("sound_asset", "footsteps/wood_1.wav");
+                        an.foleyAsset = n.value("foley_asset", "foley/regular/regular_1.wav");
+                        an.clothing = n.value("clothing", "regular");
+                        an.dialogue = n.value("dialogue", "Greetings.");
+                        an.isMoving = n.value("is_moving", false);
+                        activeNPCs.push_back(an);
+
+                        if (an.isMoving) {
+                            std::lock_guard<std::mutex> eLock(eventMutex);
+                            stepQueue.push({an.id, an.position, SurfaceType::WOOD, ClothingType::REGULAR});
+                        }
+                    }
+                }
+            }
+            else if (type == "s2c_interact_response") {
+                NPCInteractResponse resp;
+                resp.speakerName = payload.value("speaker_name", "Speaker");
+                resp.dialogue = payload.value("dialogue", "...");
+                resp.soundAsset = payload.value("sound_asset", "");
+
+                std::lock_guard<std::mutex> lock(eventMutex);
+                npcResponseQueue.push(resp);
+                announcements.push(resp.speakerName + " says: " + resp.dialogue);
             }
             else if (type == "s2c_map_data" || type == "s2c_map_updated") {
                 if (payload.contains("map") && payload["map"].is_object()) {
@@ -453,13 +601,12 @@ private:
                         hasPendingMap = true;
                         if (type == "s2c_map_updated") {
                             std::string by = payload.value("updated_by", "Server");
-                            announcements.push("World map was updated in real-time by " + by + ".");
+                            announcements.push("World map updated by " + by + ".");
                         }
                     }
                 }
             }
         } catch (...) {
-            // Non-JSON or malformed packet
         }
     }
 };

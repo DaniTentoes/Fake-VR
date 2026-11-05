@@ -1,0 +1,531 @@
+{
+  "boundary_walls": [
+    {
+      "material": "stone",
+      "name": "Lounge Exterior North Wall (West)",
+      "reflectivity": 0.8,
+      "x1": -50.0,
+      "x2": -3.5,
+      "z1": 4.0,
+      "z2": 4.0,
+      "y1": 4.0,
+      "y2": 4.0
+    },
+    {
+      "material": "stone",
+      "name": "Lounge Exterior North Wall (East)",
+      "reflectivity": 0.8,
+      "x1": 3.5,
+      "x2": 50.0,
+      "z1": 4.0,
+      "z2": 4.0,
+      "y1": 4.0,
+      "y2": 4.0
+    },
+    {
+      "material": "wood",
+      "name": "West Field Wooden Fence",
+      "reflectivity": 0.5,
+      "x1": -50.0,
+      "x2": -50.0,
+      "z1": 4.0,
+      "z2": 104.0,
+      "y1": 4.0,
+      "y2": 104.0
+    },
+    {
+      "material": "stone",
+      "name": "East Field Stone Wall",
+      "reflectivity": 0.75,
+      "x1": 50.0,
+      "x2": 50.0,
+      "z1": 4.0,
+      "z2": 104.0,
+      "y1": 4.0,
+      "y2": 104.0
+    },
+    {
+      "material": "grass",
+      "name": "North Field Tree Line Boundary",
+      "reflectivity": 0.25,
+      "x1": -50.0,
+      "x2": 50.0,
+      "z1": 104.0,
+      "z2": 104.0,
+      "y1": 104.0,
+      "y2": 104.0
+    }
+  ],
+  "default_surface": "tile",
+  "field_objects": [
+    {
+      "destructible": true,
+      "health": 100,
+      "height": 0.9,
+      "material": "wood",
+      "max_x": 1.2,
+      "max_z": 8.3,
+      "min_x": -1.2,
+      "min_z": 7.5,
+      "name": "Wooden Park Bench",
+      "regeneration": true,
+      "min_y": 7.5,
+      "max_y": 8.3,
+      "respawn_time_seconds": 60
+    },
+    {
+      "destructible": true,
+      "health": 400,
+      "height": 2.5,
+      "material": "metal",
+      "max_x": 16.0,
+      "max_z": 20.0,
+      "min_x": 12.0,
+      "min_z": 16.0,
+      "name": "Steel Tool Shed",
+      "regeneration": true,
+      "min_y": 16.0,
+      "max_y": 20.0,
+      "respawn_time_seconds": 60
+    },
+    {
+      "destructible": true,
+      "health": 600,
+      "height": 1.8,
+      "material": "stone",
+      "max_x": -10.0,
+      "max_z": 17.0,
+      "min_x": -14.0,
+      "min_z": 13.0,
+      "name": "Granite Boulder",
+      "regeneration": true,
+      "min_y": 13.0,
+      "max_y": 17.0,
+      "respawn_time_seconds": 60
+    },
+    {
+      "destructible": true,
+      "health": 250,
+      "height": 3.0,
+      "material": "wood",
+      "max_x": 4.0,
+      "max_z": 30.0,
+      "min_x": -4.0,
+      "min_z": 26.0,
+      "name": "Wooden Gazebo Pavilion",
+      "regeneration": true,
+      "min_y": 26.0,
+      "max_y": 30.0,
+      "respawn_time_seconds": 60
+    },
+    {
+      "destructible": true,
+      "health": 800,
+      "height": 2.6,
+      "material": "metal",
+      "max_x": -16.0,
+      "max_z": 41.0,
+      "min_x": -22.0,
+      "min_z": 35.0,
+      "name": "Metal Cargo Container",
+      "regeneration": true,
+      "min_y": 35.0,
+      "max_y": 41.0,
+      "respawn_time_seconds": 60
+    },
+    {
+      "destructible": true,
+      "health": 350,
+      "height": 1.4,
+      "material": "stone",
+      "max_x": 8.0,
+      "max_z": 41.0,
+      "min_x": 5.0,
+      "min_z": 38.0,
+      "name": "Stone Water Well",
+      "regeneration": true,
+      "sound_asset": "objects/well_drops.wav",
+      "sound_volume": 0.75,
+      "min_y": 38.0,
+      "max_y": 41.0,
+      "respawn_time_seconds": 60
+    },
+    {
+      "destructible": true,
+      "health": 200,
+      "height": 1.6,
+      "material": "wood",
+      "max_x": -2.0,
+      "max_z": 52.0,
+      "min_x": -8.0,
+      "min_z": 48.0,
+      "name": "Lumber Stack Pile",
+      "regeneration": true,
+      "min_y": 48.0,
+      "max_y": 52.0,
+      "respawn_time_seconds": 60
+    },
+    {
+      "destructible": true,
+      "health": 150,
+      "height": 3.2,
+      "material": "glass",
+      "max_x": 26.0,
+      "max_z": 55.0,
+      "min_x": 18.0,
+      "min_z": 45.0,
+      "name": "Glass Greenhouse Nursery",
+      "regeneration": true,
+      "min_y": 45.0,
+      "max_y": 55.0,
+      "respawn_time_seconds": 60
+    },
+    {
+      "health": 1,
+      "material": "glass",
+      "max_x": -21.0,
+      "max_z": 17.0,
+      "min_x": -23.0,
+      "min_z": 15.0,
+      "name": "Toilet with heavy caca",
+      "regeneration": false,
+      "sound_asset": "objects/toilet_caca.wav",
+      "sound_volume": 0.1,
+      "min_y": 15.0,
+      "max_y": 17.0,
+      "respawn_time_seconds": 60
+    },
+    {
+      "destructible": true,
+      "health": 1000,
+      "height": 5.0,
+      "material": "stone",
+      "max_x": 3.0,
+      "max_z": 84.0,
+      "min_x": -3.0,
+      "min_z": 80.0,
+      "name": "Ancient Stone Monolith",
+      "regeneration": true,
+      "min_y": 80.0,
+      "max_y": 84.0,
+      "respawn_time_seconds": 60
+    }
+  ],
+  "id": "lounge_and_field",
+  "regions": [
+    {
+      "ambience_asset": "ambiences/indoor/room_tone.wav",
+      "ambience_category": "indoor",
+      "ambience_volume": 0.35,
+      "id": "lounge",
+      "is_outside": false,
+      "max_x": 3.5,
+      "max_z": 4.0,
+      "min_x": -3.5,
+      "min_z": -4.0,
+      "name": "Residential Lounge House",
+      "reverb_rt60": 0.4,
+      "min_y": -4.0,
+      "max_y": 4.0
+    },
+    {
+      "ambience_asset": "ambiences/outdoor/wind_field.wav",
+      "ambience_category": "outdoor",
+      "ambience_volume": 0.45,
+      "id": "outside",
+      "is_outside": true,
+      "max_x": 50.0,
+      "max_z": 104.0,
+      "min_x": -50.0,
+      "min_z": 4.0,
+      "name": "Great Outdoor Field",
+      "reverb_rt60": 0.15,
+      "min_y": 4.0,
+      "max_y": 104.0
+    }
+  ],
+  "reverb_rt60": 0.35,
+  "spawn_point": {
+    "x": 0.0,
+    "y": 0.0,
+    "z": -2.5
+  },
+  "structures": [
+    {
+      "entrance": {
+        "leads_to": "outside",
+        "x1": -1.0,
+        "x2": 1.0,
+        "z1": 4.0,
+        "z2": 4.0
+      },
+      "exterior_bounds": {
+        "max_x": 3.5,
+        "max_z": 4.0,
+        "min_x": -3.5,
+        "min_z": -4.0
+      },
+      "id": "house_lounge",
+      "interior_objects": [
+        {
+          "health": 230,
+          "material": "glass",
+          "max_x": -1.0,
+          "max_z": -1.0,
+          "min_x": -2.0,
+          "min_z": -3.0,
+          "name": "Taliti",
+          "regeneration": true,
+          "sound_asset": "objects/creepy_whisper.wav",
+          "sound_volume": 0.1,
+          "min_y": -3.0,
+          "max_y": -1.0,
+          "respawn_time_seconds": 45
+        },
+        {
+          "destructible": true,
+          "health": 250,
+          "height": 1.8,
+          "material": "metal",
+          "max_x": 2.8,
+          "max_z": -2.4,
+          "min_x": 1.8,
+          "min_z": -3.4,
+          "name": "Metal Equipment Rack",
+          "regeneration": true,
+          "min_y": -3.4,
+          "max_y": -2.4,
+          "respawn_time_seconds": 45
+        },
+        {
+          "destructible": true,
+          "health": 120,
+          "height": 2.1,
+          "material": "wood",
+          "max_x": 3.2,
+          "max_z": 1.5,
+          "min_x": 2.5,
+          "min_z": -1.5,
+          "name": "Wooden Bookcase",
+          "regeneration": true,
+          "min_y": -1.5,
+          "max_y": 1.5,
+          "respawn_time_seconds": 45
+        },
+        {
+          "destructible": true,
+          "health": 40,
+          "height": 1.7,
+          "material": "glass",
+          "max_x": 2.8,
+          "max_z": 3.2,
+          "min_x": 1.8,
+          "min_z": 2.2,
+          "name": "Glass Display Cabinet",
+          "regeneration": true,
+          "min_y": 2.2,
+          "max_y": 3.2,
+          "respawn_time_seconds": 45
+        },
+        {
+          "health": 100,
+          "material": "wood",
+          "max_x": 0.1,
+          "max_z": 0.5,
+          "min_x": -1.1,
+          "min_z": -0.5,
+          "name": "Horrid Oak Coffee Table",
+          "regeneration": true,
+          "min_y": -0.5,
+          "max_y": 0.5,
+          "respawn_time_seconds": 45
+        }
+      ],
+      "name": "Residential House (Lounge)",
+      "type": "building",
+      "walls": [
+        {
+          "material": "wood",
+          "name": "South Plaster Wall",
+          "reflectivity": 0.6,
+          "x1": -3.5,
+          "x2": 3.5,
+          "z1": -4.0,
+          "z2": -4.0,
+          "y1": -4.0,
+          "y2": -4.0
+        },
+        {
+          "material": "stone",
+          "name": "East Wall",
+          "reflectivity": 0.75,
+          "x1": 3.5,
+          "x2": 3.5,
+          "z1": -4.0,
+          "z2": 4.0,
+          "y1": -4.0,
+          "y2": 4.0
+        },
+        {
+          "material": "stone",
+          "name": "West Wall",
+          "reflectivity": 0.75,
+          "x1": -3.5,
+          "x2": -3.5,
+          "z1": 4.0,
+          "z2": -4.0,
+          "y1": 4.0,
+          "y2": -4.0
+        },
+        {
+          "material": "wood",
+          "name": "North Wall",
+          "reflectivity": 0.6,
+          "x1": -3.5,
+          "x2": -1.0,
+          "z1": 4.0,
+          "z2": 4.0,
+          "y1": 4.0,
+          "y2": 4.0
+        },
+        {
+          "is_doorway": true,
+          "material": "wood",
+          "name": "Doorway to Outside Field",
+          "reflectivity": 0.0,
+          "x1": -1.0,
+          "x2": 1.0,
+          "z1": 4.0,
+          "z2": 4.0,
+          "y1": 4.0,
+          "y2": 4.0
+        },
+        {
+          "material": "glass",
+          "name": "Glass Bay Window",
+          "reflectivity": 0.96,
+          "x1": 1.0,
+          "x2": 2.5,
+          "z1": 4.0,
+          "z2": 4.0,
+          "y1": 4.0,
+          "y2": 4.0
+        },
+        {
+          "material": "wood",
+          "name": "North Wall",
+          "reflectivity": 0.6,
+          "x1": 2.5,
+          "x2": 3.5,
+          "z1": 4.0,
+          "z2": 4.0,
+          "y1": 4.0,
+          "y2": 4.0
+        }
+      ]
+    }
+  ],
+  "surface_zones": [
+    {
+      "max_x": 3.5,
+      "max_z": 4.0,
+      "min_x": -3.5,
+      "min_z": -4.0,
+      "name": "Living Room Wood Floor",
+      "surface": "wood",
+      "min_y": -4.0,
+      "max_y": 4.0
+    },
+    {
+      "max_x": 2.0,
+      "max_z": 1.8,
+      "min_x": -2.0,
+      "min_z": -1.8,
+      "name": "Plush Rug Under Couch",
+      "surface": "carpet",
+      "min_y": -1.8,
+      "max_y": 1.8
+    },
+    {
+      "max_x": 50.0,
+      "max_z": 104.0,
+      "min_x": -50.0,
+      "min_z": 4.0,
+      "name": "Outdoor Grass Field",
+      "surface": "grass",
+      "min_y": 4.0,
+      "max_y": 104.0
+    }
+  ],
+  "title": "Lounge & Great Outdoor Field",
+  "travel_points": [
+    {
+      "id": "to_city_capital",
+      "name": "Great Northern Highway to Capital City",
+      "trigger_x": 0.0,
+      "trigger_y": 102.0,
+      "radius": 2.5,
+      "target_map": "city_capital.json",
+      "target_spawn": {
+        "x": 0.0,
+        "y": -35.0,
+        "z": 0.0
+      }
+    },
+    {
+      "id": "to_blacksmith_shop",
+      "name": "Doorway to Blacksmith Workshop",
+      "trigger_x": 14.0,
+      "trigger_y": 17.0,
+      "radius": 1.8,
+      "target_map": "shop_blacksmith.json",
+      "target_spawn": {
+        "x": 0.0,
+        "y": -4.0,
+        "z": 0.0
+      }
+    }
+  ],
+  "spawners": [
+    {
+      "id": "spawner_guard",
+      "entity_type": "npc",
+      "x": 2.0,
+      "y": 25.0,
+      "z": 0.0,
+      "interval": 6.0,
+      "max_count": 1,
+      "wander_radius": 6.0,
+      "npc_config": {
+        "name": "Town Guard Cedric",
+        "sound_asset": "footsteps/metal_1.wav",
+        "foley_asset": "foley/armor/armor_1.wav",
+        "voice_sound": "auras/hum.wav",
+        "clothing": "armor",
+        "walk_interval": 2.8,
+        "dialogue": "Hail, traveler! Keep your footing on the grass. The road north leads to the grand city.",
+        "script_name": "guard_patrol"
+      }
+    },
+    {
+      "id": "spawner_merchant",
+      "entity_type": "npc",
+      "x": -2.0,
+      "y": 2.0,
+      "z": 0.0,
+      "interval": 10.0,
+      "max_count": 1,
+      "wander_radius": 3.5,
+      "npc_config": {
+        "name": "Merchant Althea",
+        "sound_asset": "footsteps/wood_1.wav",
+        "foley_asset": "foley/regular/regular_1.wav",
+        "voice_sound": "auras/silk.wav",
+        "clothing": "regular",
+        "walk_interval": 3.5,
+        "dialogue": "Welcome to Fake-VR! I trade in acoustic curiosities and maps of outer regions.",
+        "script_name": "merchant_idle"
+      }
+    }
+  ]
+}

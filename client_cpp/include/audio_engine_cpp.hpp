@@ -82,7 +82,6 @@ public:
     AudioEngineCpp(int sampleRate = 48000, int frameSize = 1024)
         : sampleRate(sampleRate), frameSize(frameSize), spatializer(sampleRate, frameSize), soundBank("assets/sounds") {
         
-        // Load residential lounge impulse response (0.4s Little Room from Apple 03 Small Spaces)
         std::string irPath = resolve_asset_path("assets/sounds/impulses/lounge_ir_stereo.wav");
         if (!irTail.loadIR(irPath, sampleRate)) {
             std::cerr << "[AudioEngine] Warning: Could not load lounge IR tail from " << irPath << "\n";
@@ -119,7 +118,7 @@ public:
         }
 
         running = true;
-        std::cout << "[AudioEngineCpp] Real-time physical audio running at " 
+        std::cout << "[AudioEngineCpp] Physical 3D audio running at " 
                   << sampleRate << "Hz (" << frameSize << " frame WASAPI buffer).\n";
         return true;
     }
@@ -171,7 +170,6 @@ public:
             currentAmbienceFile = neededAsset;
             const AudioBuffer* buf = soundBank.get(neededAsset);
             if (!buf) {
-                // Try environment fallback
                 buf = soundBank.get("environment/resonance_ambient.wav");
             }
 
@@ -190,20 +188,17 @@ public:
     }
 
     void refreshEmittingObjects() {
-        // Clear old emitting object sounds
         for (auto& s : activeSounds) {
             if (s.isLooping && !s.isLocalHead) {
                 s.finished = true;
             }
         }
 
-        // Spawn sustained spatial emitters for world objects that have soundAsset configured
         int ch = 10;
         for (const auto& obj : currentMap.objects) {
             if (obj.isDestroyed || obj.soundAsset.empty()) continue;
             const AudioBuffer* buf = soundBank.get(obj.soundAsset);
             if (!buf) {
-                // Try prepending objects/ or auras/
                 buf = soundBank.get("objects/" + obj.soundAsset);
                 if (!buf) buf = soundBank.get("auras/" + obj.soundAsset);
             }
@@ -217,33 +212,30 @@ public:
                 emitter.isLooping = true;
                 emitter.cursor = 0;
                 emitter.finished = false;
-                emitter.spatialChannel = (ch++ % 6) + 10; // channels 10-15
+                emitter.spatialChannel = (ch++ % 12) + 10; // channels 10-21
                 activeSounds.push_back(std::move(emitter));
             }
         }
     }
 
-    // Physical Movement Audio:
-    // Triggers both the surface footstep and the character's clothing/body foley
-    // with independent randomized sound variations.
+    // Physical Movement Audio (Footsteps + Foley) with 8-ray early reflections
     void triggerMovement(const Vector3& pos, SurfaceType surface, ClothingType clothes, bool isLocal) {
         const AudioBuffer* footBuf = soundBank.getFootstep(surface);
         const AudioBuffer* foleyBuf = soundBank.getFoley(clothes);
 
         std::lock_guard<std::mutex> lock(audioMutex);
 
-        // Clear any lingering footsteps from previous positions
         for (auto& s : activeSounds) {
             if (s.isFootstep) {
                 s.finished = true;
             }
         }
 
-        // 1. Direct footstep sound
+        // 1. Direct footstep sound (ground level)
         if (footBuf && !footBuf->samples.empty()) {
             ActiveSound snd;
             snd.buffer = footBuf;
-            snd.position = Vector3(pos.x, pos.y - 1.2f, pos.z + 0.05f);
+            snd.position = Vector3(pos.x, pos.y, pos.z - 1.0f);
             snd.volume = isLocal ? 1.0f : 0.70f;
             snd.isLocalHead = false;
             snd.isFootstep = true;
@@ -255,19 +247,19 @@ public:
         if (foleyBuf && !foleyBuf->samples.empty()) {
             ActiveSound foleySnd;
             foleySnd.buffer = foleyBuf;
-            foleySnd.position = Vector3(pos.x, pos.y - 0.4f, pos.z);
+            foleySnd.position = Vector3(pos.x, pos.y, pos.z - 0.3f);
             float foleyVol = 0.60f;
-            if (clothes == ClothingType::ARMOR) foleyVol = 1.05f; // Armor is loud and metallic
-            else if (clothes == ClothingType::NAKED) foleyVol = 0.35f; // Soft skin friction
+            if (clothes == ClothingType::ARMOR) foleyVol = 1.05f;
+            else if (clothes == ClothingType::NAKED) foleyVol = 0.35f;
 
             foleySnd.volume = isLocal ? foleyVol : (foleyVol * 0.7f);
             foleySnd.isLocalHead = false;
             foleySnd.isFootstep = true;
-            foleySnd.spatialChannel = 8;
+            foleySnd.spatialChannel = 1;
             activeSounds.push_back(std::move(foleySnd));
         }
 
-        // 3. Acoustic Aura Texture (e.g. Vinyl crackle, crystal chime, sub-bass hum, silk rustle)
+        // 3. Acoustic Aura
         if (currentAura != AuraType::NONE) {
             std::string auraKey = "auras/vinyl.wav";
             if (currentAura == AuraType::CHIME) auraKey = "auras/chime.wav";
@@ -278,7 +270,7 @@ public:
             if (auraBuf && !auraBuf->samples.empty()) {
                 ActiveSound auraSnd;
                 auraSnd.buffer = auraBuf;
-                auraSnd.position = Vector3(pos.x, pos.y - 0.2f, pos.z);
+                auraSnd.position = Vector3(pos.x, pos.y, pos.z);
                 auraSnd.volume = isLocal ? 0.75f : 0.55f;
                 auraSnd.isLocalHead = false;
                 auraSnd.isFootstep = true;
@@ -287,41 +279,66 @@ public:
             }
         }
 
-        // 4. Early reflections off nearby walls and furniture objects
+        // 4. Early reflections off nearby walls and objects (8 Omnidirectional Rays)
         if (footBuf && !footBuf->samples.empty()) {
-            float footAngles[4] = {0.0f, 90.0f, 180.0f, 270.0f};
-            for (int i = 0; i < 4; ++i) {
+            float footAngles[8] = {0.0f, 45.0f, 90.0f, 135.0f, 180.0f, 225.0f, 270.0f, 315.0f};
+            for (int i = 0; i < 8; ++i) {
                 float rad = (listenerYaw + footAngles[i]) * (float)M_PI / 180.0f;
-                Vector3 dir(std::sin(rad), 0.0f, std::cos(rad));
+                Vector3 dir(std::sin(rad), std::cos(rad), 0.0f);
                 SurfaceType hitMat = SurfaceType::WOOD;
                 float refl = 0.60f;
                 std::string hitName;
-                float dist = currentMap.cast_ray(pos, dir, 10.0f, hitMat, refl, hitName);
+                float dist = currentMap.cast_ray(pos, dir, 15.0f, hitMat, refl, hitName);
 
                 float delaySec = (2.0f * dist) / 343.0f;
                 int delaySamp = int(delaySec * sampleRate);
 
                 AcousticMaterialProps props = get_material_acoustics(hitMat);
-                float echoVol = (0.65f / (1.0f + 0.28f * dist * dist + 0.15f * dist)) * props.reflectivity;
+                float echoVol = (0.60f / (1.0f + 0.28f * dist * dist + 0.12f * dist)) * props.reflectivity;
 
                 if (echoVol > 0.02f) {
                     ActiveSound fRefl;
                     fRefl.buffer = footBuf;
-                    fRefl.position = Vector3(pos.x + dir.x * dist, pos.y - 0.3f, pos.z + dir.z * dist);
+                    fRefl.position = Vector3(pos.x + dir.x * dist, pos.y + dir.y * dist, pos.z);
                     fRefl.volume = echoVol;
                     fRefl.delaySamples = delaySamp;
                     fRefl.isLocalHead = false;
                     fRefl.isFootstep = true;
-                    fRefl.spatialChannel = i + 1;
+                    fRefl.spatialChannel = (i % 6) + 3; // Channels 3-8
                     activeSounds.push_back(std::move(fRefl));
                 }
             }
         }
     }
 
-    // Keep backwards compatibility for any external caller
-    void triggerFootstep(const Vector3& pos, SurfaceType surface, bool isLocal) {
-        triggerMovement(pos, surface, ClothingType::REGULAR, isLocal);
+    void triggerJump(const Vector3& pos) {
+        const AudioBuffer* buf = soundBank.get("movement/jump.wav");
+        if (!buf) buf = soundBank.get("environment/door_transition.wav");
+
+        ActiveSound snd;
+        snd.buffer = buf;
+        snd.position = pos;
+        snd.volume = 0.90f;
+        snd.isLocalHead = false;
+        snd.spatialChannel = 0;
+
+        std::lock_guard<std::mutex> lock(audioMutex);
+        activeSounds.push_back(std::move(snd));
+    }
+
+    void triggerLand(const Vector3& pos) {
+        const AudioBuffer* buf = soundBank.get("movement/land.wav");
+        if (!buf) buf = soundBank.get("environment/wall_bump.wav");
+
+        ActiveSound snd;
+        snd.buffer = buf;
+        snd.position = pos;
+        snd.volume = 1.0f;
+        snd.isLocalHead = false;
+        snd.spatialChannel = 0;
+
+        std::lock_guard<std::mutex> lock(audioMutex);
+        activeSounds.push_back(std::move(snd));
     }
 
     void triggerWallBump(const Vector3& pos) {
@@ -337,11 +354,9 @@ public:
         activeSounds.push_back(std::move(snd));
     }
 
-    // Triggers attack impact sound (punch) and material destruction shatter/crash
     void triggerAttackImpact(const Vector3& pos, SurfaceType mat, bool destroyed) {
         std::lock_guard<std::mutex> lock(audioMutex);
 
-        // 1. Physical hit punch impact
         const AudioBuffer* punchBuf = soundBank.get("environment/punch_impact.wav");
         if (punchBuf) {
             ActiveSound punch;
@@ -353,7 +368,6 @@ public:
             activeSounds.push_back(std::move(punch));
         }
 
-        // 2. Material destruction sound if object was broken
         if (destroyed) {
             const AudioBuffer* breakBuf = nullptr;
             switch (mat) {
@@ -378,7 +392,7 @@ public:
                 ActiveSound shatter;
                 shatter.buffer = breakBuf;
                 shatter.position = pos;
-                shatter.volume = 1.3f; // Dramatic destruction crash
+                shatter.volume = 1.3f;
                 shatter.isLocalHead = false;
                 shatter.spatialChannel = 7;
                 activeSounds.push_back(std::move(shatter));
@@ -386,7 +400,7 @@ public:
         }
     }
 
-    // High-Resolution 8-Ray Omnidirectional Raytracing for Spacebar Echolocation
+    // High-Density 16-Ray Omnidirectional Raytracing for Smooth Acoustic Perception (Diagonals included)
     void triggerEcholocation(const Vector3& origin, float yawDeg) {
         const AudioBuffer* clickBuf = soundBank.get("echolocation/click.wav");
         
@@ -403,31 +417,36 @@ public:
         std::lock_guard<std::mutex> lock(audioMutex);
         activeSounds.push_back(std::move(snap));
 
-        float rayAngles[8] = {0.0f, 45.0f, 90.0f, 135.0f, 180.0f, 225.0f, 270.0f, 315.0f};
+        // 16 omnidirectional ray angles (every 22.5 degrees) covering full circle
+        const int NUM_RAYS = 16;
+        float rayAngles[NUM_RAYS] = {
+            0.0f, 22.5f, 45.0f, 67.5f, 90.0f, 112.5f, 135.0f, 157.5f,
+            180.0f, 202.5f, 225.0f, 247.5f, 270.0f, 292.5f, 315.0f, 337.5f
+        };
 
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < NUM_RAYS; ++i) {
             float rel = rayAngles[i];
             float rad = (yawDeg + rel) * (float)M_PI / 180.0f;
-            Vector3 dir(std::sin(rad), 0.0f, std::cos(rad));
+            Vector3 dir(std::sin(rad), std::cos(rad), 0.0f);
 
             SurfaceType hitMaterial = SurfaceType::WOOD;
             float reflectivity = 0.60f;
             std::string hitName;
-            float dist = currentMap.cast_ray(origin, dir, 20.0f, hitMaterial, reflectivity, hitName);
+            float dist = currentMap.cast_ray(origin, dir, 25.0f, hitMaterial, reflectivity, hitName);
 
             if (dist < 0.20f) dist = 0.20f;
+            if (dist >= 25.0f) continue; // Out of hearing distance
 
             // Physical delay: t = 2d / 343 m/s
             float delaySec = (2.0f * dist) / 343.0f;
             int delaySamp = int(delaySec * sampleRate);
 
-            Vector3 hitPos(origin.x + dir.x * dist, origin.y, origin.z + dir.z * dist);
-
+            Vector3 hitPos(origin.x + dir.x * dist, origin.y + dir.y * dist, origin.z);
             AcousticMaterialProps matProps = get_material_acoustics(hitMaterial);
 
-            // Realistic amplitude falloff with extended proximity curve
-            float vol = (1.10f / (1.0f + 0.18f * dist * dist + 0.10f * dist)) * matProps.reflectivity;
-            vol = (std::max)(0.06f, (std::min)(0.95f, vol));
+            // Smooth angular weighting to prevent sudden popping into the field of hearing
+            float vol = (1.0f / (1.0f + 0.16f * dist * dist + 0.08f * dist)) * matProps.reflectivity;
+            vol = (std::max)(0.04f, (std::min)(0.90f, vol));
 
             ActiveSound ret;
             ret.syntheticBuffer = generateMaterialImpulse(matProps, dist);
@@ -435,7 +454,7 @@ public:
             ret.volume = vol;
             ret.delaySamples = delaySamp;
             ret.isLocalHead = false;
-            ret.spatialChannel = (i + 1); // Channels 1-8
+            ret.spatialChannel = (i % 16) + 1; // Steam Audio Channels 1-16
 
             activeSounds.push_back(std::move(ret));
         }
@@ -458,7 +477,6 @@ private:
     AuraType currentAura = AuraType::NONE;
     std::vector<ActiveSound> activeSounds;
 
-    // Sustained ambient beds & emitting objects
     std::string currentAmbienceFile = "";
     ActiveSound ambienceSound;
     bool hasAmbience = false;
@@ -483,7 +501,6 @@ private:
         Vector3 curPos = listenerPos;
         float curYaw = listenerYaw;
 
-        // Process sustained ambient background bed
         if (hasAmbience) {
             int ambCopied = ambienceSound.getNextFrames(frames, monoTemp);
             if (ambCopied > 0) {
@@ -495,7 +512,6 @@ private:
             }
         }
 
-        // Process active sounds & spatial reflections through independent Steam Audio HRTF channels
         for (auto it = activeSounds.begin(); it != activeSounds.end(); ) {
             int copied = it->getNextFrames(frames, monoTemp);
             if (copied > 0) {
@@ -506,6 +522,11 @@ private:
                         reverbSend[i] += monoTemp[i] * 0.30f;
                     }
                 } else {
+                    // Material-based Acoustic Occlusion Calculation
+                    float trans = 1.0f;
+                    float muffle = 0.0f;
+                    currentMap.calculate_occlusion(curPos, it->position, trans, muffle);
+
                     spatializer.spatializeChannel(
                         it->spatialChannel,
                         monoTemp.data(),
@@ -515,12 +536,13 @@ private:
                         it->position,
                         leftOut.data(),
                         rightOut.data(),
-                        1.0f
+                        1.0f,
+                        trans,
+                        muffle
                     );
 
-                    // Reverb send level for diffuse background tail
                     for (int i = 0; i < frames; ++i) {
-                        reverbSend[i] += monoTemp[i] * 0.25f;
+                        reverbSend[i] += monoTemp[i] * 0.25f * trans;
                     }
                 }
             }
@@ -533,10 +555,8 @@ private:
         }
         lock.unlock();
 
-        // Feed gentle diffuse tail into realistic Apple residential IR (wet gain = 0.16)
         irTail.process(reverbSend.data(), frames, 0.16f, leftOut.data(), rightOut.data());
 
-        // Interleave & soft clip into output buffer
         for (int i = 0; i < frames; ++i) {
             float l = (std::max)(-0.98f, (std::min)(0.98f, leftOut[i]));
             float r = (std::max)(-0.98f, (std::min)(0.98f, rightOut[i]));
@@ -546,7 +566,7 @@ private:
     }
 
     std::vector<float> generateSyntheticClick() {
-        int length = int(sampleRate * 0.015f); // 15ms crisp direct click
+        int length = int(sampleRate * 0.015f);
         std::vector<float> click(length);
         for (int i = 0; i < length; ++i) {
             float t = (float)i / (float)sampleRate;
@@ -557,7 +577,6 @@ private:
         return click;
     }
 
-    // Physically models the acoustic reflection waveform based on material properties
     std::vector<float> generateMaterialImpulse(const AcousticMaterialProps& props, float dist) {
         float durSec = 0.030f + (dist * 0.0015f);
         int length = int(sampleRate * durSec);
@@ -569,10 +588,8 @@ private:
         for (int i = 0; i < length; ++i) {
             float t = (float)i / (float)sampleRate;
             float env = std::exp(-t * decayRate);
-            
             float wave = std::sin(2.0f * (float)M_PI * freq * t);
             
-            // Higher harmonic for hard, reflective materials (glass, metal)
             if (props.highFreqDamping < 0.20f) {
                 wave += 0.35f * std::sin(2.0f * (float)M_PI * (freq * 2.1f) * t) * std::exp(-t * decayRate * 1.6f);
             }

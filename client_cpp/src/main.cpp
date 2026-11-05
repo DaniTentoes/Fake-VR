@@ -20,8 +20,8 @@ using namespace fakevr;
 
 // Connection info configuration
 struct AppConfig {
-    std::string host = "bore.pub";
-    int port = 32827;
+    std::string host = "127.0.0.1";
+    int port = 7777;
     std::string username = "Player";
 };
 
@@ -53,18 +53,16 @@ void save_config(const AppConfig& cfg) {
     } catch (...) {}
 }
 
-// Global Game State
 static bool g_dialogAccepted = false;
 static AppConfig g_cfg;
 
-// Dialog Callback for Connection Prompt
 LRESULT CALLBACK ConnectDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_INITDIALOG: {
             SetWindowTextA(GetDlgItem(hDlg, 101), g_cfg.host.c_str());
             SetWindowTextA(GetDlgItem(hDlg, 102), std::to_string(g_cfg.port).c_str());
             SetWindowTextA(GetDlgItem(hDlg, 103), g_cfg.username.c_str());
-            SetFocus(GetDlgItem(hDlg, 103)); // Default focus on Username
+            SetFocus(GetDlgItem(hDlg, 103));
             return FALSE;
         }
         case WM_COMMAND: {
@@ -97,7 +95,6 @@ LRESULT CALLBACK ConnectDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPara
     return FALSE;
 }
 
-// Build programmatic dialog template in memory
 bool ShowConnectionDialog(HINSTANCE hInstance, HWND hParent) {
     std::vector<WORD> dlgTemplate(1024, 0);
     LPDLGTEMPLATE pDlg = (LPDLGTEMPLATE)dlgTemplate.data();
@@ -107,10 +104,10 @@ bool ShowConnectionDialog(HINSTANCE hInstance, HWND hParent) {
     pDlg->cx = 240; pDlg->cy = 130;
 
     WORD* p = (WORD*)(pDlg + 1);
-    *p++ = 0; // Menu
-    *p++ = 0; // Class
+    *p++ = 0;
+    *p++ = 0;
     const wchar_t* title = L"Fake-VR Server Connect";
-    wcscpy((wchar_t*)p, title);
+    wcscpy_s((wchar_t*)p, 64, title);
     p += wcslen(title) + 1;
 
     auto alignDword = [](WORD* ptr) -> WORD* {
@@ -129,24 +126,20 @@ bool ShowConnectionDialog(HINSTANCE hInstance, HWND hParent) {
         p = (WORD*)(pItem + 1);
         *p++ = 0xFFFF;
         *p++ = classId;
-        wcscpy((wchar_t*)p, text);
+        wcscpy_s((wchar_t*)p, 64, text);
         p += wcslen(text) + 1;
         *p++ = 0;
     };
 
-    // Label & Edit: Host
     addControl(WS_CHILD | WS_VISIBLE | SS_LEFT, 15, 12, 60, 10, 201, 0x0082, L"Server Host:");
     addControl(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 80, 10, 145, 12, 101, 0x0081, L"");
 
-    // Label & Edit: Port
     addControl(WS_CHILD | WS_VISIBLE | SS_LEFT, 15, 32, 60, 10, 202, 0x0082, L"Port:");
     addControl(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL | ES_NUMBER, 80, 30, 145, 12, 102, 0x0081, L"");
 
-    // Label & Edit: Username
     addControl(WS_CHILD | WS_VISIBLE | SS_LEFT, 15, 52, 60, 10, 203, 0x0082, L"Username:");
     addControl(WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 80, 50, 145, 12, 103, 0x0081, L"");
 
-    // Buttons: Connect (IDOK) & Exit (IDCANCEL)
     addControl(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 55, 90, 75, 18, IDOK, 0x0080, L"Enter World");
     addControl(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 140, 90, 75, 18, IDCANCEL, 0x0080, L"Cancel");
 
@@ -154,7 +147,6 @@ bool ShowConnectionDialog(HINSTANCE hInstance, HWND hParent) {
     return (res == IDOK);
 }
 
-// Window procedure for main game viewport
 LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_PAINT: {
@@ -179,25 +171,28 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             DeleteObject(hFontTitle);
 
             SetTextColor(hdc, RGB(160, 175, 195));
-            TextOutA(hdc, 24, 60, "Connected to: bore.pub:32827 | Binaural 3D Audio Active", 55);
+            TextOutA(hdc, 24, 60, "Steam Audio HRTF & Occlusion Active | 3D Spatial Audio", 54);
 
             SetTextColor(hdc, RGB(200, 210, 225));
             const char* helpText[] = {
                 "CONTROLS:",
-                "  W, A, S, D        - Walk forward, strafe, move diagonally",
+                "  W, A, S, D        - Walk forward, strafe (1 step = 1 tile)",
                 "  Left / Right      - Turn 30 degrees",
-                "  Spacebar          - Attack object in front (Destructible)",
-                "  U                 - Active 8-Ray Echolocation Pulse",
+                "  Ctrl + Space      - Jump (3 tiles elevation arc)",
+                "  Spacebar          - Attack object in front (Server Authoritative)",
+                "  B                 - Building Tool (Mark Point A and Point B to erect walls)",
+                "  E                 - Interact with nearby NPC or structure",
+                "  U                 - Active 16-Ray Echolocation Pulse",
                 "  T                 - Cycle outfit (Regular Clothes, Naked, Armor)",
                 "  P                 - Nearby Players Radar",
-                "  C                 - Status & Coordinates",
+                "  C                 - Status & 3D Coordinates (X, Y, Z)",
                 "  Escape / Alt+F4   - Exit",
             };
 
-            int y = 100;
+            int y = 95;
             for (const auto& line : helpText) {
                 TextOutA(hdc, 24, y, line, (int)strlen(line));
-                y += 24;
+                y += 22;
             }
 
             SelectObject(hdc, hFontOld);
@@ -216,15 +211,13 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     g_cfg = load_config();
 
-    // 1. Show Accessible Connection Dialog
     if (!ShowConnectionDialog(hInstance, NULL)) {
         return 0;
     }
 
     ScreenReader sr;
-    sr.speak("Starting Fake-VR spatial audio client.");
+    sr.speak("Starting Fake-VR 3D spatial audio client.");
 
-    // 2. Register and Create Native Main Window
     const char* CLASS_NAME = "FakeVR_Client_Window";
     WNDCLASSA wc{};
     wc.lpfnWndProc = MainWndProc;
@@ -237,9 +230,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     HWND hWnd = CreateWindowExA(
         0,
         CLASS_NAME,
-        "Fake-VR (Spatial Audio Cyberspace)",
+        "Fake-VR (3D Spatial Audio Cyberspace)",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 700, 460,
+        CW_USEDEFAULT, CW_USEDEFAULT, 740, 480,
         NULL, NULL, hInstance, NULL
     );
 
@@ -247,7 +240,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
-    // 3. Audio & World Engine Setup
     AudioEngineCpp audio(48000, 1024);
     WorldMap world;
     if (!world.load_from_json_file("assets/maps/default_world.json")) {
@@ -271,30 +263,41 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         return 1;
     }
 
-    // 4. Connect to Server
     NetworkClient net;
     bool isMultiplayer = net.connectToServer(g_cfg.host, g_cfg.port, g_cfg.username);
     if (isMultiplayer) {
         sr.speak("Connected to server as " + g_cfg.username);
         net.sendMove(playerPos, playerYaw, curSurface, curClothes, false);
     } else {
-        sr.speak("Server offline. Continuing in standalone offline mode.");
+        sr.speak("Server offline. Running in standalone local mode.");
     }
 
     std::string startMsg = "Welcome to Fake-VR, " + g_cfg.username + 
-                           ". Press W, A, S, D to walk. U for echolocation. Spacebar to attack. T to toggle clothes. P for players online. C for status. Escape to quit.";
+                           ". W, A, S, D to walk. 1 step is 1 tile. Ctrl Space to jump. Space to attack. B for building tool. E to interact. C for coordinates.";
     sr.speak(startMsg);
 
-    // 5. Game Loop & Real-Time Input Pump
     bool running = true;
-    const float stepSize = 0.65f;
+    const float stepSize = 1.0f; // Exactly 1 tile = 1.0 meter!
     const float turnStep = 30.0f;
-    const DWORD walkStepIntervalMs = 280;
+    const DWORD walkStepIntervalMs = 320;
     DWORD lastWalkTime = 0;
     bool wasMoving = false;
 
+    // 3D Jump Controller
+    JumpController jumpCtrl;
+    jumpCtrl.baseJumpHeight = 3.0f; // Default 3 tiles vertical height!
+    jumpCtrl.accessoryMultiplier = 1.0f; // Ready for footwear/accessories
+
+    // In-Game Building Tool State
+    bool buildingMode = false;
+    bool hasBuildPointA = false;
+    Vector3 buildPointA{0.0f, 0.0f, 0.0f};
+
     bool prevKeyU = false;
     bool prevKeySpace = false;
+    bool prevKeyB = false;
+    bool prevKeyE = false;
+    bool prevKeyReturn = false;
     bool prevKeyT = false;
     bool prevKeyY = false;
     bool prevKeyP = false;
@@ -305,7 +308,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     MSG msg{};
     while (running) {
-        // Dispatch Win32 messages without blocking
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 running = false;
@@ -318,12 +320,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
         DWORD now = GetTickCount();
 
-        // 1-Minute Regeneration Check
-        std::vector<std::string> respawned;
-        if (world.update_regenerations((unsigned long long)now, respawned)) {
-            audio.setMap(world);
-            for (const auto& rName : respawned) {
-                sr.speak(rName + " has regenerated.");
+        // 3D Jump physics update
+        if (jumpCtrl.isJumping) {
+            bool landed = false;
+            float newZ = jumpCtrl.update((unsigned long long)now, landed);
+            playerPos.z = newZ;
+            audio.setListener(playerPos, playerYaw);
+
+            if (landed) {
+                audio.triggerLand(playerPos);
+                sr.speak("Landed.");
+                if (isMultiplayer) {
+                    net.sendMove(playerPos, playerYaw, curSurface, curClothes, false, false);
+                }
+            }
+        }
+
+        // Offline regeneration fallback
+        if (!isMultiplayer) {
+            std::vector<std::string> respawned;
+            if (world.update_regenerations((unsigned long long)now, respawned)) {
+                audio.setMap(world);
+                for (const auto& rName : respawned) {
+                    sr.speak(rName + " has regenerated.");
+                }
             }
         }
 
@@ -344,26 +364,35 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                 audio.triggerAttackImpact(atkEv.impactPos, atkEv.material, atkEv.destroyed);
             }
 
+            ObjectStateEvent objEv;
+            while (net.pollObjectState(objEv)) {
+                for (auto& o : world.objects) {
+                    if (o.id == objEv.objectId || o.name == objEv.name) {
+                        o.health = objEv.health;
+                        o.maxHealth = objEv.maxHealth;
+                        o.isDestroyed = objEv.isDestroyed;
+                        o.solidObstacle = !objEv.isDestroyed;
+                        break;
+                    }
+                }
+                audio.setMap(world);
+            }
+
             RemoteEchoEvent echoEv;
             while (net.pollEcho(echoEv)) {
                 audio.triggerEcholocation(echoEv.position, echoEv.yaw);
             }
 
-            // Real-time server map synchronization / remote client reset
             json newMapJson;
             std::string newMapTitle;
             if (net.pollMapUpdate(newMapJson, newMapTitle)) {
                 if (world.load_from_json(newMapJson)) {
-                    // Update engine audio acoustics and obstacles
                     audio.setMap(world);
-
-                    // Re-resolve player's physical placement on the newly pushed world
                     curSurface = world.get_surface_at(playerPos);
                     curRegion = world.get_region_at(playerPos);
                     curNearbyObj = world.get_nearby_object(playerPos);
                     audio.updateAmbienceForPosition(playerPos);
 
-                    // If newly placed structures or walls now overlap player's coordinate, nudge to spawn safely
                     bool collided = false;
                     std::string hitObs;
                     world.try_move(playerPos, playerPos, collided, hitObs);
@@ -372,7 +401,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                         audio.setListener(playerPos, playerYaw);
                     }
 
-                    // Save local cached copy of default_world.json so restarts match
                     try {
                         std::ofstream fOut("assets/maps/default_world.json");
                         if (fOut.is_open()) {
@@ -380,24 +408,29 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                         }
                     } catch (...) {}
 
-                    sr.speak("World map updated live by host: " + newMapTitle + ".");
+                    sr.speak("World map updated live: " + newMapTitle + ".");
                 }
             }
         }
 
-        // Only process hotkeys if this window has focus
         if (GetForegroundWindow() == hWnd) {
             if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
-                running = false;
-                sr.speak("Exiting Fake-VR.");
-                break;
+                if (buildingMode) {
+                    buildingMode = false;
+                    hasBuildPointA = false;
+                    sr.speak("Building tool mode exited.");
+                } else {
+                    running = false;
+                    sr.speak("Exiting Fake-VR.");
+                    break;
+                }
             }
 
             bool keyLeft = (GetAsyncKeyState(VK_LEFT) & 0x8000) != 0;
             if (keyLeft && !prevKeyLeft) {
                 playerYaw = std::fmod(playerYaw - turnStep + 360.0f, 360.0f);
                 audio.setListener(playerPos, playerYaw);
-                if (isMultiplayer) net.sendMove(playerPos, playerYaw, curSurface, curClothes, false);
+                if (isMultiplayer) net.sendMove(playerPos, playerYaw, curSurface, curClothes, false, jumpCtrl.isJumping);
                 sr.speak("Facing " + std::to_string(int(playerYaw)) + " degrees.");
             }
             prevKeyLeft = keyLeft;
@@ -406,11 +439,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             if (keyRight && !prevKeyRight) {
                 playerYaw = std::fmod(playerYaw + turnStep, 360.0f);
                 audio.setListener(playerPos, playerYaw);
-                if (isMultiplayer) net.sendMove(playerPos, playerYaw, curSurface, curClothes, false);
+                if (isMultiplayer) net.sendMove(playerPos, playerYaw, curSurface, curClothes, false, jumpCtrl.isJumping);
                 sr.speak("Facing " + std::to_string(int(playerYaw)) + " degrees.");
             }
             prevKeyRight = keyRight;
 
+            // 16-Ray Echolocation
             bool keyU = (GetAsyncKeyState('U') & 0x8000) != 0;
             if (keyU && !prevKeyU) {
                 audio.triggerEcholocation(playerPos, playerYaw);
@@ -418,33 +452,132 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             }
             prevKeyU = keyU;
 
+            // Jump (Ctrl + Space) or Attack (Space alone)
+            bool ctrlPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
             bool keySpace = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
             if (keySpace && !prevKeySpace) {
-                std::string hitName;
-                SurfaceType hitMat = SurfaceType::WOOD;
-                bool destroyed = false;
-                int hpLeft = 0;
-                Vector3 impactPos;
-
-                int bareHandsDamage = 25;
-                if (world.attack_object_in_front(playerPos, playerYaw, bareHandsDamage, hitName, hitMat, destroyed, hpLeft, impactPos, (unsigned long long)now)) {
-                    audio.triggerAttackImpact(impactPos, hitMat, destroyed);
-                    audio.setMap(world);
-
-                    if (isMultiplayer) {
-                        net.sendAttack(hitName, hitMat, destroyed, impactPos);
-                    }
-
-                    if (destroyed) {
-                        sr.speak("Destroyed " + hitName + "!");
-                    } else {
-                        sr.speak("Struck " + hitName + ". " + std::to_string(hpLeft) + " health remaining.");
+                if (ctrlPressed) {
+                    // JUMP! (3 Tiles default vertical height arc)
+                    if (!jumpCtrl.isJumping) {
+                        jumpCtrl.startJump((unsigned long long)now);
+                        audio.triggerJump(playerPos);
+                        sr.speak("Jump!");
+                        if (isMultiplayer) {
+                            net.sendMove(playerPos, playerYaw, curSurface, curClothes, false, true);
+                        }
                     }
                 } else {
-                    sr.speak("Swung into thin air.");
+                    // ATTACK OBJECT IN FRONT
+                    std::string hitName;
+                    SurfaceType hitMat = SurfaceType::WOOD;
+                    bool destroyed = false;
+                    int hpLeft = 0;
+                    Vector3 impactPos;
+
+                    int bareHandsDamage = 25;
+                    if (world.attack_object_in_front(playerPos, playerYaw, bareHandsDamage, hitName, hitMat, destroyed, hpLeft, impactPos, (unsigned long long)now)) {
+                        audio.triggerAttackImpact(impactPos, hitMat, destroyed);
+                        audio.setMap(world);
+
+                        if (isMultiplayer) {
+                            net.sendAttack(hitName, hitMat, bareHandsDamage, impactPos);
+                        }
+
+                        if (destroyed) {
+                            sr.speak("Destroyed " + hitName + "!");
+                        } else {
+                            sr.speak("Struck " + hitName + ". " + std::to_string(hpLeft) + " health remaining.");
+                        }
+                    } else {
+                        sr.speak("Swung into thin air.");
+                    }
                 }
             }
             prevKeySpace = keySpace;
+
+            // Building Tool (Hotkey 'B')
+            bool keyB = (GetAsyncKeyState('B') & 0x8000) != 0;
+            if (keyB && !prevKeyB) {
+                buildingMode = !buildingMode;
+                hasBuildPointA = false;
+                if (buildingMode) {
+                    sr.speak("Building tool enabled. Stand at Point A and press Enter to mark the ground.");
+                } else {
+                    sr.speak("Building tool disabled.");
+                }
+            }
+            prevKeyB = keyB;
+
+            // Building Tool Confirmation (Hotkey 'Enter')
+            bool keyReturn = (GetAsyncKeyState(VK_RETURN) & 0x8000) != 0;
+            if (keyReturn && !prevKeyReturn) {
+                if (buildingMode) {
+                    if (!hasBuildPointA) {
+                        buildPointA = playerPos;
+                        hasBuildPointA = true;
+                        audio.triggerWallBump(playerPos);
+                        sr.speak("Point A marked at X " + std::to_string(int(buildPointA.x)) + 
+                                 ", Y " + std::to_string(int(buildPointA.y)) + 
+                                 ". Now walk to Point B and press Enter to erect the wall.");
+                    } else {
+                        float dist = buildPointA.distance_xy(playerPos);
+                        if (dist < 1.0f) {
+                            sr.speak("Point B is too close to Point A. Walk at least 1 tile away.");
+                        } else {
+                            float x1 = buildPointA.x, y1 = buildPointA.y;
+                            float x2 = playerPos.x, y2 = playerPos.y;
+                            std::string wallName = "Constructed Wall";
+                            
+                            // Add locally
+                            WallSegment ws{x1, y1, x2, y2, wallName, SurfaceType::WOOD, 0.60f, false, -1};
+                            world.walls.push_back(ws);
+                            audio.setMap(world);
+                            audio.triggerAttackImpact(playerPos, SurfaceType::WOOD, false);
+
+                            if (isMultiplayer) {
+                                net.sendBuildWall(x1, y1, x2, y2, SurfaceType::WOOD, wallName);
+                            }
+
+                            sr.speak("Wall erected between marked points! " + std::to_string(int(dist)) + " meters long.");
+                            hasBuildPointA = false;
+                            buildingMode = false;
+                        }
+                    }
+                }
+            }
+            prevKeyReturn = keyReturn;
+
+            // Interact with NPC or Structure (Hotkey 'E')
+            bool keyE = (GetAsyncKeyState('E') & 0x8000) != 0;
+            if (keyE && !prevKeyE) {
+                auto npcs = net.getActiveNPCs();
+                bool foundNPC = false;
+                for (const auto& npc : npcs) {
+                    float d = playerPos.distance_xy(npc.position);
+                    if (d <= 2.5f) {
+                        foundNPC = true;
+                        sr.speak("Speaking to " + npc.name + ": " + npc.dialogue);
+                        audio.triggerAttackImpact(npc.position, SurfaceType::WOOD, false);
+                        if (isMultiplayer) {
+                            net.sendInteract(npc.id);
+                        }
+                        break;
+                    }
+                }
+                if (!foundNPC) {
+                    // Check travel points
+                    const TravelPoint* tp = world.get_triggered_travel_point(playerPos);
+                    if (tp) {
+                        sr.speak("Entering travel point: " + tp->name);
+                        if (isMultiplayer) {
+                            net.sendTravel(tp->target_map, tp->target_spawn);
+                        }
+                    } else {
+                        sr.speak("Nothing nearby to interact with.");
+                    }
+                }
+            }
+            prevKeyE = keyE;
 
             bool keyT = (GetAsyncKeyState('T') & 0x8000) != 0;
             if (keyT && !prevKeyT) {
@@ -454,7 +587,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
                 sr.speak("Wearing " + clothing_to_string(curClothes));
                 audio.triggerMovement(playerPos, curSurface, curClothes, true);
-                if (isMultiplayer) net.sendMove(playerPos, playerYaw, curSurface, curClothes, false);
+                if (isMultiplayer) net.sendMove(playerPos, playerYaw, curSurface, curClothes, false, jumpCtrl.isJumping);
             }
             prevKeyT = keyT;
 
@@ -483,7 +616,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                     } else {
                         std::string radar = std::to_string(remotePlayers.size()) + (remotePlayers.size() > 1 ? " players online: " : " player online: ");
                         for (const auto& rp : remotePlayers) {
-                            float d = playerPos.distance_xz(rp.position);
+                            float d = playerPos.distance_xy(rp.position);
                             std::string uName = rp.username.empty() ? "Guest" : rp.username;
                             radar += uName + " at " + std::to_string((int)std::round(d)) + " meters. ";
                         }
@@ -497,7 +630,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             if (keyC && !prevKeyC) {
                 std::string regTitle = curRegion ? curRegion->name : "Area";
                 std::string msg = regTitle + ". Position: X " + std::to_string(int(playerPos.x)) + 
-                                  ", Z " + std::to_string(int(playerPos.z)) + 
+                                  ", Y " + std::to_string(int(playerPos.y)) + 
+                                  ", Height Z " + std::to_string(int(std::round(playerPos.z))) + 
                                   ". Facing " + std::to_string(int(playerYaw)) + 
                                   " degrees. Ground: " + surface_to_string(curSurface) + 
                                   ". Attire: " + clothing_to_string(curClothes) + ".";
@@ -510,11 +644,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
             bool keyH = (GetAsyncKeyState('H') & 0x8000) != 0;
             if (keyH && !prevKeyH) {
-                sr.speak("Controls: W, A, S, D to walk. Left and Right arrows to turn. T to change clothes. U for echolocation. Spacebar to attack. P for players online. C for coordinates. Escape to quit.");
+                sr.speak("Controls: W, A, S, D to walk. 1 step is 1 tile. Ctrl Space to jump. Space to attack. B to build. E to interact. C for coordinates.");
             }
             prevKeyH = keyH;
 
-            // Multi-Directional Movement
+            // Movement in 2D horizontal plane (1 step = 1 tile = 1.0m)
             float fwd = 0.0f;
             float str = 0.0f;
 
@@ -542,13 +676,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                 }
 
                 float rad = playerYaw * (float)M_PI / 180.0f;
+                // Forward is North (+Y), Strafe Right is East (+X)
                 float dx = (std::sin(rad) * fwd + std::cos(rad) * str) * stepSize;
-                float dz = (std::cos(rad) * fwd - std::sin(rad) * str) * stepSize;
+                float dy = (std::cos(rad) * fwd - std::sin(rad) * str) * stepSize;
 
-                Vector3 targetPos(playerPos.x + dx, playerPos.y, playerPos.z + dz);
+                Vector3 targetPos(playerPos.x + dx, playerPos.y + dy, playerPos.z);
                 bool collided = false;
                 std::string hitObstacle;
-                Vector3 newPos = world.try_move(playerPos, targetPos, collided, hitObstacle);
+
+                // Pass other players as physical 1-tile obstacles
+                auto otherPlayers = net.getRemotePlayerObstacles();
+                Vector3 newPos = world.try_move(playerPos, targetPos, collided, hitObstacle, otherPlayers);
 
                 if (collided) {
                     audio.triggerWallBump(targetPos);
@@ -571,7 +709,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                     audio.triggerMovement(playerPos, curSurface, curClothes, true);
 
                     if (isMultiplayer) {
-                        net.sendMove(playerPos, playerYaw, curSurface, curClothes, true);
+                        net.sendMove(playerPos, playerYaw, curSurface, curClothes, true, jumpCtrl.isJumping);
+                    }
+
+                    // Automatic TravelPoint Trigger Check
+                    const TravelPoint* tp = world.get_triggered_travel_point(playerPos);
+                    if (tp) {
+                        sr.speak("Entering " + tp->name);
+                        if (isMultiplayer) {
+                            net.sendTravel(tp->target_map, tp->target_spawn);
+                        }
                     }
 
                     if (curRegion != oldRegion && curRegion != nullptr) {
