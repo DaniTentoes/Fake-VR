@@ -1,5 +1,5 @@
 {
-    "download_url":  "https://github.com/DaniTentoes/Fake-VR/releases/download/v1.1.3/FakeVR_Friend_Client.zip",
-    "changelog":  "Win32 GUI client with accessible connection dialog and editable JSON map system",
-    "version":  "1.1.3"
+    "download_url":  "https://github.com/DaniTentoes/Fake-VR/releases/download/v1.1.4/FakeVR_Friend_Client.zip",
+    "changelog":  "Server-side map sync with Studio viewing, editing, and live push",
+    "version":  "1.1.4"
 }
