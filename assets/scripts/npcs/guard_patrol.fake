@@ -1,0 +1,38 @@
+# ==============================================================================
+# AcoustiScript: Town Guard Cedric (guard_patrol.fake)
+# Armed patrol guard securing the northern doorway and perimeter
+# ==============================================================================
+
+entity_type: "npc"
+clothing: "armor"
+sound_asset: "footsteps/wood_1.wav"
+foley_asset: "foley/armor/armor_1.wav"
+voice_sound: "auras/hum.wav"
+wander_radius: 6.0
+walk_interval: 2.8
+patrol_interval: 3.2
+
+on spawn:
+    set_dialogue "Hail, citizen! Keep your footing on the grass. The road north leads to the grand city."
+    patrol_waypoints [(-2.0, 3.5), (2.0, 3.5), (2.0, 6.0), (-2.0, 6.0)]
+
+on player_approach(distance <= 3.5):
+    face_player
+    play_sound "foley/armor/armor_1.wav", volume=0.5
+    say "Keep peace in the lounge and the field, traveler."
+
+on interact(player):
+    face_player
+    play_sound "auras/hum.wav", volume=0.75
+    say "Hail, traveler! Keep your footing on the grass. The road north leads to the grand city."
+
+on hear_sound(sound_type, distance <= 15.0):
+    if sound_type == "object_destroy":
+        face_player
+        say "Who shattered that?! Cease this destruction immediately!"
+    elif sound_type == "echolocation_snap":
+        say "The doorway to the lounge is directly south of you."
+
+on attack(damage):
+    play_sound "environment/punch_impact.wav", volume=0.9
+    say "Attacking an officer of the realm?! Stand down!"

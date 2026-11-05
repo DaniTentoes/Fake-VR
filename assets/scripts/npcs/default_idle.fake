@@ -1,0 +1,30 @@
+# ==============================================================================
+# AcoustiScript: Default Idle (default_idle.fake)
+# Standard ambient wanderer behavior for NPCs
+# ==============================================================================
+
+entity_type: "npc"
+clothing: "regular"
+sound_asset: "footsteps/wood_1.wav"
+foley_asset: "foley/regular/regular_1.wav"
+voice_sound: "auras/hum.wav"
+wander_radius: 5.0
+walk_interval: 3.0
+
+on spawn:
+    set_dialogue "Greetings, traveler."
+
+on player_approach(distance <= 3.0):
+    face_player
+    play_sound "auras/hum.wav", volume=0.4
+    say "Hello there, traveler."
+
+on interact(player):
+    face_player
+    play_sound "auras/hum.wav", volume=0.7
+    say "Greetings, traveler. Safe journey through these lands."
+
+on hear_sound(sound_type, distance <= 12.0):
+    if sound_type == "echolocation_snap":
+        face_player
+        say "I heard that snap echoing off the walls."

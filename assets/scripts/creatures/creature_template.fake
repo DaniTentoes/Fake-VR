@@ -1,0 +1,61 @@
+# ==============================================================================
+# AcoustiScript: Creature Template (creature_template.fake)
+# Fake-VR Audio-First Spatial Metaverse Creature Specification
+# ==============================================================================
+# This template defines behaviors for non-humanoid creatures (wild beasts,
+# domesticated pets, wandering monsters, and loyal companions).
+# All events are authoritative on the server and rendered with 3D binaural acoustics.
+
+entity_type: "creature"
+clothing: "naked"                          # Creatures naturally use skin/fur foley
+sound_asset: "footsteps/carpet_1.wav"      # Soft paw pad / claw ground step sound
+voice_sound: "auras/hum.wav"               # Distinct creature vocalization (purr, snarl, whine)
+wander_radius: 8.0                         # Roaming boundary from spawn origin (meters)
+walk_interval: 3.5                         # Rest interval between strides (seconds)
+flee_distance: 6.0                         # Retreat radius when startled or struck
+
+# ------------------------------------------------------------------------------
+# 1. Spawn Hook: Initial setup when creature materializes
+# ------------------------------------------------------------------------------
+on spawn:
+    set_dialogue "*The creature breathes softly and sniffs the air.*"
+
+# ------------------------------------------------------------------------------
+# 2. Player Proximity Hook: Fires when a player walks within hearing distance
+# ------------------------------------------------------------------------------
+on player_approach(distance <= 3.5):
+    face_player
+    # Emit gentle breathing / vocalization
+    play_sound "auras/hum.wav", volume=0.5
+    say "*The creature tilts its head and watches you carefully.*"
+
+# ------------------------------------------------------------------------------
+# 3. Interaction Hook: Fires when a player stands close and presses 'E'
+# ------------------------------------------------------------------------------
+on interact(player):
+    face_player
+    # Happy vocalization / purr
+    play_sound "auras/chime.wav", volume=0.6
+    say "*You gently pet the creature. It purrs softly and nuzzles your hand.*"
+
+# ------------------------------------------------------------------------------
+# 4. Auditory Awareness Hook: Triggered by loud acoustic events
+# ------------------------------------------------------------------------------
+on hear_sound(sound_type, distance <= 12.0):
+    if sound_type == "echolocation_snap":
+        # Creature responds to blind user's echolocation pulse with an acoustic beacon
+        face_player
+        play_sound "auras/hum.wav", volume=0.4
+        say "*The creature chirps back in response to your click.*"
+
+    elif sound_type == "object_destroy":
+        # Startled by breaking objects
+        say "*Startled by the crash, the creature backs away cautiously.*"
+
+# ------------------------------------------------------------------------------
+# 5. Combat & Self-Defense Hook: Triggered when attacked (Spacebar)
+# ------------------------------------------------------------------------------
+on attack(damage):
+    play_sound "environment/wall_bump.wav", volume=0.9
+    say "*The creature yelps in alarm and scampers away to a safe distance!*"
+    flee_from attacker, flee_distance

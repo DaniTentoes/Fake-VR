@@ -1,0 +1,38 @@
+# ==============================================================================
+# AcoustiScript: Wolf Companion (wolf_companion.fake)
+# Loyal canine companion roaming the open grass field
+# ==============================================================================
+
+entity_type: "creature"
+clothing: "naked"
+sound_asset: "footsteps/carpet_2.wav"
+voice_sound: "auras/hum.wav"
+wander_radius: 5.0
+walk_interval: 3.0
+flee_distance: 4.0
+
+on spawn:
+    set_dialogue "*The grey wolf sits quietly, ears perked.*"
+
+on player_approach(distance <= 3.0):
+    face_player
+    play_sound "auras/hum.wav", volume=0.5
+    say "*The wolf wags its bushy tail and gives a low, friendly whimper.*"
+
+on interact(player):
+    face_player
+    play_sound "auras/hum.wav", volume=0.7
+    say "*You scratch the wolf behind its ears. It pants happily and leans against your leg.*"
+
+on hear_sound(sound_type, distance <= 15.0):
+    if sound_type == "echolocation_snap":
+        face_player
+        play_sound "auras/hum.wav", volume=0.6
+        say "*The wolf gives a short, sharp bark in your direction.*"
+    elif sound_type == "object_destroy":
+        face_player
+        say "*The wolf stands at attention and lets out a low growl.*"
+
+on attack(damage):
+    play_sound "environment/wall_bump.wav", volume=0.8
+    say "*The wolf dodges with quick agility, warning you with bared teeth.*"

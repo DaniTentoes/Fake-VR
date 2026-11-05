@@ -14,11 +14,13 @@ import socket
 import os
 import json
 import time
+import math
 from typing import Dict, Optional, List
 
 from shared.protocol import MessageType, encode_packet, decode_packet
 from shared.models import Vector3, SurfaceType, AuraType
 from server.room_manager import RoomManager, ConnectedPlayer, RoomState
+from server.script_engine import ScriptEngine
 
 TICK_RATE_HZ = 20  # 20 updates/second
 
@@ -33,9 +35,12 @@ class FakeVRServer:
         self.server: Optional[asyncio.Server] = None
         self.is_running = False
         self._writer_to_player: Dict[asyncio.StreamWriter, ConnectedPlayer] = {}
-        self.maps_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "maps")
-        self.saves_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "saves")
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.maps_dir = os.path.join(base_dir, "assets", "maps")
+        self.saves_dir = os.path.join(base_dir, "assets", "saves")
         os.makedirs(self.saves_dir, exist_ok=True)
+        self.scripts_dir = os.path.join(base_dir, "assets", "scripts")
+        self.script_engine = ScriptEngine(self.scripts_dir)
         self.current_map_file = os.path.join(self.maps_dir, "default_world.json")
         self.current_map_data: dict = self._load_map_file(self.current_map_file)
         self.loaded_maps: Dict[str, dict] = {}
@@ -233,6 +238,63 @@ class FakeVRServer:
                                 obj.to_dict()
                             )
 
+                        # Trigger AcoustiScript attack and auditory awareness routines for nearby NPCs & creatures
+                        impact_x = float(impact_dict.get("x", player.position.x))
+                        impact_y = float(impact_dict.get("y", player.position.y))
+                        npc_state_changed = False
+
+                        for n in list(room_st.npcs.values()):
+                            ndist = math.hypot(impact_x - n.position.x, impact_y - n.position.y)
+                            is_direct_hit = (lookup_key and (lookup_key == n.id.lower() or lookup_key in n.name.lower())) or (ndist <= 1.5)
+                            if is_direct_hit:
+                                atk_cmds = self.script_engine.execute_event(n, "attack", {
+                                    "damage": damage,
+                                    "distance": ndist,
+                                    "attacker": player.to_player_state().to_dict(),
+                                    "player_position": player.position.to_dict()
+                                }, room_state=room_st)
+                                for acmd in atk_cmds:
+                                    if acmd.get("type") == "say":
+                                        await self._broadcast_to_room(
+                                            player.room_id,
+                                            MessageType.S2C_INTERACT_RESPONSE,
+                                            {
+                                                "speaker_name": n.name,
+                                                "dialogue": acmd.get("text", n.dialogue),
+                                                "sound_asset": n.sound_asset
+                                            }
+                                        )
+                                    elif acmd.get("type") in ("flee", "step"):
+                                        npc_state_changed = True
+                            elif ndist <= 15.0:
+                                stype = "object_destroy" if was_destroyed else "attack"
+                                hear_cmds = self.script_engine.execute_event(n, "hear_sound", {
+                                    "sound_type": stype,
+                                    "distance": ndist,
+                                    "attacker": player.to_player_state().to_dict(),
+                                    "player_position": player.position.to_dict()
+                                }, room_state=room_st)
+                                for hcmd in hear_cmds:
+                                    if hcmd.get("type") == "say":
+                                        await self._broadcast_to_room(
+                                            player.room_id,
+                                            MessageType.S2C_INTERACT_RESPONSE,
+                                            {
+                                                "speaker_name": n.name,
+                                                "dialogue": hcmd.get("text", n.dialogue),
+                                                "sound_asset": n.sound_asset
+                                            }
+                                        )
+                                    elif hcmd.get("type") in ("flee", "step"):
+                                        npc_state_changed = True
+
+                        if npc_state_changed:
+                            await self._broadcast_to_room(
+                                player.room_id,
+                                MessageType.S2C_NPC_UPDATE,
+                                {"npcs": [n.to_dict() for n in room_st.npcs.values()]}
+                            )
+
                     elif msg_type == MessageType.C2S_BUILD_WALL.value:
                         # Player erected a wall using the building tool!
                         x1 = float(payload.get("x1", 0.0))
@@ -361,14 +423,35 @@ class FakeVRServer:
                                     break
 
                         if npc:
+                            dist = math.hypot(player.position.x - npc.position.x, player.position.y - npc.position.y)
+                            script_cmds = self.script_engine.execute_event(npc, "interact", {
+                                "player": player.to_player_state().to_dict(),
+                                "player_position": player.position.to_dict(),
+                                "distance": dist
+                            }, room_state=room_st)
+
+                            sound_to_play = npc.sound_asset
+                            for cmd in script_cmds:
+                                if cmd.get("type") == "play_sound":
+                                    sound_to_play = cmd.get("sound_asset", sound_to_play)
+                                elif cmd.get("type") == "say":
+                                    npc.dialogue = cmd.get("text", npc.dialogue)
+
                             await self._send_packet(
                                 writer,
                                 MessageType.S2C_INTERACT_RESPONSE,
                                 {
                                     "speaker_name": npc.name,
                                     "dialogue": npc.dialogue,
-                                    "sound_asset": npc.sound_asset
+                                    "sound_asset": sound_to_play
                                 }
+                            )
+
+                            # Broadcast updated NPC state (e.g. face_player orientation, updated dialogue)
+                            await self._broadcast_to_room(
+                                player.room_id,
+                                MessageType.S2C_NPC_UPDATE,
+                                {"npcs": [n.to_dict() for n in room_st.npcs.values()]}
                             )
 
                     elif msg_type == MessageType.C2S_SPAWN_NPC.value:
@@ -454,6 +537,38 @@ class FakeVRServer:
                             },
                             exclude_player_id=player.player_id
                         )
+
+                        # NPCs and creatures hear the echolocation pulse and call back
+                        for n in list(room_st.npcs.values()):
+                            ndist = math.hypot(player.position.x - n.position.x, player.position.y - n.position.y)
+                            if ndist <= 15.0:
+                                echo_cmds = self.script_engine.execute_event(n, "hear_sound", {
+                                    "sound_type": "echolocation_snap",
+                                    "distance": ndist,
+                                    "player": player.to_player_state().to_dict(),
+                                    "player_position": player.position.to_dict()
+                                }, room_state=room_st)
+                                for ecmd in echo_cmds:
+                                    if ecmd.get("type") == "say":
+                                        await self._broadcast_to_room(
+                                            player.room_id,
+                                            MessageType.S2C_INTERACT_RESPONSE,
+                                            {
+                                                "speaker_name": n.name,
+                                                "dialogue": ecmd.get("text", n.dialogue),
+                                                "sound_asset": n.sound_asset
+                                            }
+                                        )
+                                    elif ecmd.get("type") == "play_sound":
+                                        await self._broadcast_to_room(
+                                            player.room_id,
+                                            MessageType.S2C_INTERACT_RESPONSE,
+                                            {
+                                                "speaker_name": "",
+                                                "dialogue": "",
+                                                "sound_asset": ecmd.get("sound_asset", "")
+                                            }
+                                        )
 
                     elif msg_type == MessageType.C2S_AURA_CHANGE.value:
                         aura_val = payload.get("aura", AuraType.NONE.value)
@@ -556,10 +671,16 @@ class FakeVRServer:
         npc_step_check_interval = 0.5
         last_npc_check = 0.0
         last_auto_save = time.time()
+        last_hot_reload_check = time.time()
 
         while self.is_running:
             now = time.time()
             start_time = asyncio.get_event_loop().time()
+
+            # Check script hot reloads every 2.5s without interrupting gameplay
+            if now - last_hot_reload_check >= 2.5:
+                last_hot_reload_check = now
+                self.script_engine.check_hot_reloads()
 
             for room_id in list(self.room_mgr.room_states.keys()):
                 players = self.room_mgr.get_room_players(room_id)
@@ -576,15 +697,37 @@ class FakeVRServer:
                             robj.to_dict()
                         )
 
-                # Simulate NPC steps and wander movement
+                # Simulate NPC steps, wander movement, and AcoustiScript routines
                 if now - last_npc_check >= npc_step_check_interval:
-                    moved_npcs = room_st.update_npcs(now)
+                    moved_npcs, script_cmds = room_st.update_npcs(now, script_engine=self.script_engine, players=players)
                     if moved_npcs:
                         await self._broadcast_to_room(
                             room_id,
                             MessageType.S2C_NPC_UPDATE,
                             {"npcs": [n.to_dict() for n in room_st.npcs.values()]}
                         )
+                    # Broadcast any audio / speech commands generated by scripts
+                    for scmd in script_cmds:
+                        if scmd.get("type") == "say":
+                            await self._broadcast_to_room(
+                                room_id,
+                                MessageType.S2C_INTERACT_RESPONSE,
+                                {
+                                    "speaker_name": scmd.get("speaker", "NPC"),
+                                    "dialogue": scmd.get("text", "..."),
+                                    "sound_asset": ""
+                                }
+                            )
+                        elif scmd.get("type") == "play_sound":
+                            await self._broadcast_to_room(
+                                room_id,
+                                MessageType.S2C_INTERACT_RESPONSE,
+                                {
+                                    "speaker_name": "",
+                                    "dialogue": "",
+                                    "sound_asset": scmd.get("sound_asset", "")
+                                }
+                            )
 
                 if players:
                     snapshot = [p.to_player_state().to_dict() for p in players]

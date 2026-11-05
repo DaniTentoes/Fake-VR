@@ -104,6 +104,16 @@
       "reflectivity": 0.6,
       "name": "Testing Wall",
       "is_doorway": false
+    },
+    {
+      "x1": 5.0,
+      "y1": 5.0,
+      "x2": 5.0,
+      "y2": 10.0,
+      "material": "wood",
+      "reflectivity": 0.6,
+      "name": "Testing Wall",
+      "is_doorway": false
     }
   ],
   "default_surface": "tile",
@@ -569,6 +579,63 @@
         "dialogue": "I sing of ancient tales and distant worlds.",
         "script_name": "default_idle",
         "walk_interval": 3.0
+      }
+    },
+    {
+      "id": "spawner_town_guard_cedric",
+      "entity_type": "npc",
+      "x": -17.0,
+      "y": 33.0,
+      "z": 0.0,
+      "interval": 3.0,
+      "max_count": 1,
+      "wander_radius": 6.0,
+      "npc_config": {
+        "name": "Town Guard Cedric",
+        "sound_asset": "footsteps/wood_1.wav",
+        "foley_asset": "foley/armor/armor_1.wav",
+        "voice_sound": "auras/hum.wav",
+        "clothing": "armor",
+        "walk_interval": 2.8,
+        "dialogue": "Hail, traveler! Keep your footing. The road north leads to the grand city.",
+        "script_name": "guard_patrol"
+      }
+    },
+    {
+      "id": "spawner_test_npc",
+      "entity_type": "npc",
+      "x": -18.0,
+      "y": 14.0,
+      "z": 0.0,
+      "wander_radius": 10.0,
+      "interval": 2.8,
+      "npc_config": {
+        "name": "Test npc",
+        "sound_asset": "footsteps/wood_1.wav",
+        "foley_asset": "foley/armor/armor_1.wav",
+        "clothing": "armor",
+        "dialogue": "Hey man, hey",
+        "script_name": "guard_patrol",
+        "walk_interval": 2.8
+      }
+    },
+    {
+      "id": "spawner_forest_wolf",
+      "entity_type": "creature",
+      "x": 4.0,
+      "y": 10.0,
+      "z": 0.0,
+      "wander_radius": 7.0,
+      "interval": 3.2,
+      "npc_config": {
+        "name": "Forest Wolf",
+        "sound_asset": "footsteps/carpet_1.wav",
+        "foley_asset": "foley/regular/regular_1.wav",
+        "voice_sound": "auras/hum.wav",
+        "clothing": "naked",
+        "dialogue": "*The grey wolf pants softly, wagging its bushy tail, watching you with keen amber eyes.*",
+        "script_name": "wolf_companion",
+        "walk_interval": 3.2
       }
     }
   ]

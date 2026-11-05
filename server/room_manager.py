@@ -120,7 +120,8 @@ class NPCInstance:
             "sound_asset": self.sound_asset,
             "foley_asset": self.foley_asset,
             "clothing": self.clothing,
-            "dialogue": self.dialogue
+            "dialogue": self.dialogue,
+            "script_name": self.script_name
         }
 
 
@@ -436,13 +437,29 @@ class RoomState:
                 respawned.append(obj)
         return respawned
 
-    def update_npcs(self, now: float) -> List[NPCInstance]:
-        """Simulate NPC locomotion."""
+    def update_npcs(self, now: float, script_engine: Optional[Any] = None, players: Optional[List[Any]] = None) -> Tuple[List[NPCInstance], List[dict]]:
+        """Simulate NPC locomotion and script routines. Returns (moved_npcs, commands)."""
         moved = []
+        commands = []
         for npc in self.npcs.values():
-            if npc.update(now):
-                moved.append(npc)
-        return moved
+            has_patrol = False
+            script_cmds = []
+            if script_engine:
+                ctx = script_engine.get_or_create_context(npc)
+                if ctx and ctx.patrol_waypoints:
+                    has_patrol = True
+                script_cmds = script_engine.on_tick_npc(npc, self, now, players=players)
+                if script_cmds:
+                    commands.extend(script_cmds)
+
+            if has_patrol:
+                if any(c.get("type") in ("step", "flee") for c in script_cmds):
+                    moved.append(npc)
+            else:
+                if npc.update(now):
+                    moved.append(npc)
+
+        return moved, commands
 
 
 class RoomManager:

@@ -1,0 +1,29 @@
+# ==============================================================================
+# AcoustiScript: Merchant Althea (merchant_idle.fake)
+# Acoustic trader offering sonic curiosities, bells, and map parchments
+# ==============================================================================
+
+entity_type: "npc"
+clothing: "regular"
+sound_asset: "footsteps/wood_2.wav"
+foley_asset: "foley/regular/regular_1.wav"
+voice_sound: "auras/silk.wav"
+wander_radius: 3.0
+walk_interval: 4.0
+
+on spawn:
+    set_dialogue "Welcome to Fake-VR! I trade in acoustic curiosities and maps of outer regions."
+
+on player_approach(distance <= 3.0):
+    face_player
+    play_sound "auras/chime.wav", volume=0.5
+    say "Welcome, traveler! Step closer and browse my acoustic wares."
+
+on interact(player):
+    face_player
+    play_sound "auras/chime.wav", volume=0.8
+    say "Welcome to Fake-VR! I trade in acoustic curiosities and maps of outer regions. Take your time exploring the resonant lounge."
+
+on hear_sound(sound_type, distance <= 10.0):
+    if sound_type == "echolocation_snap":
+        say "Ah, a sharp acoustic snap! Listen to the wall reflections in here."

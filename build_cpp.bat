@@ -4,6 +4,7 @@ echo ========================================================
 echo        BUILDING FAKE-VR NATIVE C++ CLIENT (MSVC x64)
 echo ========================================================
 
+taskkill /F /IM FakeVR_Client.exe 2>nul
 call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 
 if not exist bin mkdir bin

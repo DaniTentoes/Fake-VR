@@ -749,8 +749,23 @@ class SpawnerNPCStudioPanel(wx.Panel):
         content_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         # Left Column: NPC Attributes Form
-        box = wx.StaticBox(self, label="Interactive NPC Designer")
+        box = wx.StaticBox(self, label="Interactive NPC & Creature Designer")
         box_sizer = wx.StaticBoxSizer(box, wx.VERTICAL)
+
+        # Quick Preset Buttons
+        h_presets = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_preset_guard = wx.Button(self, label="🛡️ Guard")
+        self.btn_preset_guard.Bind(wx.EVT_BUTTON, self.on_preset_guard)
+        h_presets.Add(self.btn_preset_guard, 1, wx.EXPAND | wx.RIGHT, 3)
+
+        self.btn_preset_merchant = wx.Button(self, label="🛒 Merchant")
+        self.btn_preset_merchant.Bind(wx.EVT_BUTTON, self.on_preset_merchant)
+        h_presets.Add(self.btn_preset_merchant, 1, wx.EXPAND | wx.RIGHT, 3)
+
+        self.btn_preset_creature = wx.Button(self, label="🐾 Wolf Creature")
+        self.btn_preset_creature.Bind(wx.EVT_BUTTON, self.on_preset_creature)
+        h_presets.Add(self.btn_preset_creature, 1, wx.EXPAND)
+        box_sizer.Add(h_presets, 0, wx.EXPAND | wx.ALL, 4)
 
         grid = wx.FlexGridSizer(rows=7, cols=2, vgap=5, hgap=8)
 
@@ -789,7 +804,8 @@ class SpawnerNPCStudioPanel(wx.Panel):
         grid.Add(self.txt_dialogue, 1, wx.EXPAND)
 
         grid.Add(wx.StaticText(self, label="Behavior Script Hook:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_script = wx.TextCtrl(self, value="guard_patrol")
+        script_choices = self.get_available_scripts()
+        self.txt_script = wx.ComboBox(self, value="guard_patrol", choices=script_choices, style=wx.CB_DROPDOWN)
         grid.Add(self.txt_script, 1, wx.EXPAND)
 
         grid.AddGrowableCol(1, 1)
@@ -819,6 +835,42 @@ class SpawnerNPCStudioPanel(wx.Panel):
         main_sizer.Add(content_sizer, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 6)
 
         self.SetSizer(main_sizer)
+
+    def get_available_scripts(self):
+        scripts_dir = os.path.join(ROOT_DIR, "assets", "scripts")
+        found = ["default_idle", "guard_patrol", "merchant_idle", "wolf_companion", "creature_template"]
+        if os.path.isdir(scripts_dir):
+            for root, _, files in os.walk(scripts_dir):
+                for f in files:
+                    if f.endswith(".fake"):
+                        name = f[:-5].lower()
+                        if name not in found:
+                            found.append(name)
+        return sorted(found)
+
+    def on_preset_guard(self, event):
+        self.txt_npc_name.SetValue("Town Guard Cedric")
+        self.choice_clothing.SetStringSelection("armor")
+        self.txt_voice.SetValue("auras/hum.wav")
+        self.txt_wander.SetValue("6.0")
+        self.txt_script.SetValue("guard_patrol")
+        self.txt_dialogue.SetValue("Hail, citizen! Keep your footing on the grass. The road north leads to the grand city.")
+
+    def on_preset_merchant(self, event):
+        self.txt_npc_name.SetValue("Merchant Althea")
+        self.choice_clothing.SetStringSelection("regular")
+        self.txt_voice.SetValue("auras/silk.wav")
+        self.txt_wander.SetValue("3.0")
+        self.txt_script.SetValue("merchant_idle")
+        self.txt_dialogue.SetValue("Welcome to Fake-VR! I trade in acoustic curiosities and maps of outer regions. Take your time exploring the resonant lounge.")
+
+    def on_preset_creature(self, event):
+        self.txt_npc_name.SetValue("Forest Wolf")
+        self.choice_clothing.SetStringSelection("naked")
+        self.txt_voice.SetValue("auras/hum.wav")
+        self.txt_wander.SetValue("7.0")
+        self.txt_script.SetValue("wolf_companion")
+        self.txt_dialogue.SetValue("*The grey wolf pants softly, wagging its bushy tail, watching you with keen amber eyes.*")
 
     def refresh_spawners_from_map(self, spawners_list):
         self.spawners = list(spawners_list)
@@ -856,11 +908,14 @@ class SpawnerNPCStudioPanel(wx.Panel):
         dialogue = self.txt_dialogue.GetValue().strip()
         script = self.txt_script.GetValue().strip()
 
-        import uuid
+        is_creature = (clothing == "naked" or "wolf" in script.lower() or "creature" in script.lower() or "creature" in name.lower())
+        sound_asset = "footsteps/carpet_1.wav" if is_creature else "footsteps/wood_1.wav"
+        foley_asset = f"foley/{clothing}/{clothing}_1.wav" if clothing != "naked" else "foley/regular/regular_1.wav"
+
         sp_id = f"spawner_{name.lower().replace(' ', '_')}"
         return {
             "id": sp_id,
-            "entity_type": "npc",
+            "entity_type": "creature" if is_creature else "npc",
             "x": x,
             "y": y,
             "z": 0.0,
@@ -869,8 +924,8 @@ class SpawnerNPCStudioPanel(wx.Panel):
             "wander_radius": wander,
             "npc_config": {
                 "name": name,
-                "sound_asset": "footsteps/wood_1.wav",
-                "foley_asset": f"foley/{clothing}/{clothing}_1.wav" if clothing != "naked" else "foley/regular/regular_1.wav",
+                "sound_asset": sound_asset,
+                "foley_asset": foley_asset,
                 "voice_sound": voice,
                 "clothing": clothing,
                 "walk_interval": 2.8,
