@@ -1,5 +1,5 @@
 {
-    "download_url":  "https://github.com/DaniTentoes/Fake-VR/releases/download/v1.1.0/FakeVR_Friend_Client.zip",
-    "changelog":  "Faster walking pace and responsive step cadence",
-    "version":  "1.1.0"
+    "download_url":  "https://github.com/DaniTentoes/Fake-VR/releases/download/v1.1.1/FakeVR_Friend_Client.zip",
+    "changelog":  "1-minute object regeneration timer and wx Map/Foley Studio",
+    "version":  "1.1.1"
 }
