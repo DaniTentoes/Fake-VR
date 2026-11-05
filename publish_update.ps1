@@ -68,11 +68,14 @@ Remove-Item -Recurse -Force $staging
 # 3. Commit and push version.json to git
 Write-Host "Updating repository and git tag..."
 git add version.json
-git commit -m "Release v$Version: $Changelog"
+$commitMsg = "Release v" + $Version + ": " + $Changelog
+git commit -m $commitMsg
 git push origin main
 
 # 4. Upload release to GitHub via gh CLI
 Write-Host "Uploading release to GitHub..."
-gh release create "v$Version" $zipName --title "Fake-VR v$Version" --notes "$Changelog"
+$tag = "v" + $Version
+$title = "Fake-VR v" + $Version
+gh release create $tag $zipName --title $title --notes "$Changelog"
 
 Write-Host "SUCCESS! Release v$Version published. All connected clients will auto-update on launch!"
