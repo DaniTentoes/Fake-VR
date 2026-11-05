@@ -311,6 +311,7 @@ struct ActiveNPC {
     std::string clothing = "regular";
     std::string dialogue = "Hello there.";
     bool isMoving = false;
+    unsigned long long lastStepMs = 0;
 };
 
 // Remote Player representation as a physical 1-tile obstacle
@@ -787,15 +788,31 @@ struct WorldMap {
         float dx = sourcePos.x - listenerPos.x;
         float dy = sourcePos.y - listenerPos.y;
         float dist = std::sqrt(dx * dx + dy * dy);
-        if (dist < 0.1f) return;
+        if (dist < 0.6f) return; // Very close: clear line-of-sight, skip raycasts
+        if (dist >= 25.0f) {
+            out_transmission = 0.0f;
+            return;
+        }
 
         float dir_x = dx / dist;
         float dir_y = dy / dist;
+
+        float min_x = (std::min)(listenerPos.x, sourcePos.x) - 0.1f;
+        float max_x = (std::max)(listenerPos.x, sourcePos.x) + 0.1f;
+        float min_y = (std::min)(listenerPos.y, sourcePos.y) - 0.1f;
+        float max_y = (std::max)(listenerPos.y, sourcePos.y) + 0.1f;
 
         // Trace ray between listener and source against all solid walls and objects
         for (const auto& w : walls) {
             if (w.isDoorwayOpening) continue;
             if (w.linkedObjectId >= 0 && is_object_destroyed(w.linkedObjectId)) continue;
+
+            // Bounding box rejection: if wall is completely outside ray bounding box, skip!
+            float w_min_x = (std::min)(w.x1, w.x2);
+            float w_max_x = (std::max)(w.x1, w.x2);
+            float w_min_y = (std::min)(w.y1, w.y2);
+            float w_max_y = (std::max)(w.y1, w.y2);
+            if (w_max_x < min_x || w_min_x > max_x || w_min_y > max_y || w_max_y < min_y) continue;
 
             float t = 0.0f;
             if (intersect_ray_segment(listenerPos.x, listenerPos.y, dir_x, dir_y, w.x1, w.y1, w.x2, w.y2, t)) {

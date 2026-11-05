@@ -536,7 +536,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
             RemoteStepEvent stepEv;
             while (net.pollStep(stepEv)) {
-                audio.triggerMovement(stepEv.position, stepEv.surface, stepEv.clothing, false);
+                if (!stepEv.customSoundAsset.empty()) {
+                    // Play the sound specified in the NPC's creation
+                    audio.triggerNPCSound(stepEv.position, stepEv.customSoundAsset);
+                } else {
+                    audio.triggerMovement(stepEv.position, stepEv.surface, stepEv.clothing, false);
+                }
+            }
+
+            NPCInteractResponse npcResp;
+            while (net.pollNPCInteract(npcResp)) {
+                if (!npcResp.soundAsset.empty()) {
+                    audio.triggerNPCSound(playerPos, npcResp.soundAsset);
+                }
             }
 
             RemoteAttackEvent atkEv;
@@ -634,18 +646,35 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             }
         }
 
-        // Periodic 3D audible presence rustle/breathing for nearby stationary NPCs (every 3.5s)
-        static double lastNpcPresenceTime = 0.0;
-        if (now - lastNpcPresenceTime >= 3.5) {
-            lastNpcPresenceTime = now;
-            for (const auto& npc : world.active_npcs) {
-                float d = playerPos.distance_xy(npc.position);
-                if (d <= 20.0f) {
-                    SurfaceType nSurf = world.get_surface_at(npc.position);
-                    ClothingType nCloth = ClothingType::REGULAR;
-                    if (npc.clothing == "armor") nCloth = ClothingType::ARMOR;
-                    else if (npc.clothing == "naked") nCloth = ClothingType::NAKED;
-                    audio.triggerMovement(npc.position, nSurf, nCloth, false);
+        // Offline NPC wander simulation
+        if (!isMultiplayer) {
+            static DWORD lastOfflineNpcCheck = 0;
+            if (now - lastOfflineNpcCheck >= 1000) {
+                lastOfflineNpcCheck = now;
+                for (auto& npc : world.active_npcs) {
+                    if (npc.wanderRadius > 0 && (now - npc.lastStepMs >= 3500)) {
+                        npc.lastStepMs = now;
+                        if ((rand() % 100) < 60) {
+                            float angleRad = (float)(rand() % 360) * (float)M_PI / 180.0f;
+                            float stepDist = 1.0f;
+                            float newX = npc.position.x + std::sin(angleRad) * stepDist;
+                            float newY = npc.position.y + std::cos(angleRad) * stepDist;
+                            float dx = newX - npc.homePosition.x;
+                            float dy = newY - npc.homePosition.y;
+                            if ((dx * dx + dy * dy) <= (npc.wanderRadius * npc.wanderRadius)) {
+                                npc.position.x = newX;
+                                npc.position.y = newY;
+                                npc.yaw = angleRad * 180.0f / (float)M_PI;
+                                audio.triggerNPCSound(npc.position, npc.soundAsset);
+                            } else {
+                                float backRad = std::atan2(npc.homePosition.x - npc.position.x, npc.homePosition.y - npc.position.y);
+                                npc.position.x += std::sin(backRad) * stepDist;
+                                npc.position.y += std::cos(backRad) * stepDist;
+                                npc.yaw = backRad * 180.0f / (float)M_PI;
+                                audio.triggerNPCSound(npc.position, npc.soundAsset);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -794,7 +823,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                     if (d <= 2.5f) {
                         foundNPC = true;
                         sr.speak("Speaking to " + npc.name + ": " + npc.dialogue);
-                        audio.triggerAttackImpact(npc.position, SurfaceType::WOOD, false);
+                        audio.triggerNPCSound(npc.position, npc.soundAsset);
                         if (isMultiplayer) {
                             net.sendInteract(npc.id);
                         }

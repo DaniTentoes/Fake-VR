@@ -259,8 +259,8 @@ public:
             activeSounds.push_back(std::move(foleySnd));
         }
 
-        // 3. Acoustic Aura
-        if (currentAura != AuraType::NONE) {
+        // 3. Acoustic Aura (Local Player Only)
+        if (isLocal && currentAura != AuraType::NONE) {
             std::string auraKey = "auras/vinyl.wav";
             if (currentAura == AuraType::CHIME) auraKey = "auras/chime.wav";
             else if (currentAura == AuraType::HUM) auraKey = "auras/hum.wav";
@@ -271,7 +271,7 @@ public:
                 ActiveSound auraSnd;
                 auraSnd.buffer = auraBuf;
                 auraSnd.position = Vector3(pos.x, pos.y, pos.z);
-                auraSnd.volume = isLocal ? 0.75f : 0.55f;
+                auraSnd.volume = 0.75f;
                 auraSnd.isLocalHead = false;
                 auraSnd.isFootstep = true;
                 auraSnd.spatialChannel = 2;
@@ -279,8 +279,8 @@ public:
             }
         }
 
-        // 4. Early reflections off nearby walls and objects (8 Omnidirectional Rays)
-        if (footBuf && !footBuf->samples.empty()) {
+        // 4. Early reflections off nearby walls and objects (Local Player Only)
+        if (isLocal && footBuf && !footBuf->samples.empty()) {
             float footAngles[8] = {0.0f, 45.0f, 90.0f, 135.0f, 180.0f, 225.0f, 270.0f, 315.0f};
             for (int i = 0; i < 8; ++i) {
                 float rad = (listenerYaw + footAngles[i]) * (float)M_PI / 180.0f;
@@ -308,6 +308,42 @@ public:
                     activeSounds.push_back(std::move(fRefl));
                 }
             }
+        }
+    }
+
+    // Direct NPC Sound (e.g. wander footstep or voice, playing the sound specified at creation)
+    void triggerNPCSound(const Vector3& pos, const std::string& soundAsset, float volume = 0.75f) {
+        if (soundAsset.empty()) return;
+
+        // Standard hearing range check: skip sounds further than 25 tiles
+        float dx = pos.x - listenerPos.x;
+        float dy = pos.y - listenerPos.y;
+        float distSq = dx * dx + dy * dy;
+        if (distSq > 25.0f * 25.0f) return;
+
+        const AudioBuffer* buf = soundBank.get(soundAsset);
+        if (!buf || buf->samples.empty()) {
+            buf = soundBank.getFootstep(currentMap.get_surface_at(pos));
+        }
+        if (!buf || buf->samples.empty()) return;
+
+        ActiveSound snd;
+        snd.buffer = buf;
+        snd.position = pos;
+        snd.volume = (std::max)(0.05f, (std::min)(1.0f, volume));
+        snd.isLocalHead = false;
+        snd.isFootstep = true;
+        snd.spatialChannel = 2; // Channel 2 dedicated to NPC sound
+
+        std::lock_guard<std::mutex> lock(audioMutex);
+        // Replace previous active NPC sound on this channel to prevent audio piling up
+        for (auto& s : activeSounds) {
+            if (s.spatialChannel == 2) {
+                s.finished = true;
+            }
+        }
+        if (activeSounds.size() < 24) {
+            activeSounds.push_back(std::move(snd));
         }
     }
 

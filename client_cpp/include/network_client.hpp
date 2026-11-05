@@ -53,6 +53,7 @@ struct RemoteStepEvent {
     Vector3 position;
     SurfaceType surface = SurfaceType::WOOD;
     ClothingType clothing = ClothingType::REGULAR;
+    std::string customSoundAsset = "";
 };
 
 struct ObjectStateEvent {
@@ -588,7 +589,10 @@ private:
 
                         if (an.isMoving) {
                             std::lock_guard<std::mutex> eLock(eventMutex);
-                            stepQueue.push({an.id, an.position, SurfaceType::WOOD, ClothingType::REGULAR});
+                            ClothingType ct = ClothingType::REGULAR;
+                            if (an.clothing == "armor") ct = ClothingType::ARMOR;
+                            else if (an.clothing == "naked") ct = ClothingType::NAKED;
+                            stepQueue.push({an.id, an.position, SurfaceType::WOOD, ct, an.soundAsset});
                         }
                     }
                 }
