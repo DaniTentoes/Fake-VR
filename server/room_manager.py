@@ -5,6 +5,8 @@ NPC wander simulation, travel points, and world snapshots.
 """
 
 from __future__ import annotations
+import os
+import json
 import uuid
 import time
 import math
@@ -224,8 +226,9 @@ class RoomState:
             cfg = sp.get("npc_config", {})
 
             if entity_type == "npc":
+                npc_id = spawner_id if spawner_id.startswith("npc_") else f"npc_{spawner_id}"
                 npc = NPCInstance(
-                    npc_id=f"npc_{spawner_id}",
+                    npc_id=npc_id,
                     name=cfg.get("name", "Traveler"),
                     spawn_pos=sp_pos,
                     wander_radius=wander_rad,
@@ -237,6 +240,167 @@ class RoomState:
                     script_name=cfg.get("script_name", "default_idle")
                 )
                 self.npcs[npc.id] = npc
+
+    def get_live_map_dict(self) -> dict:
+        """Serializes current authoritative room state with destroyed object statuses."""
+        return {
+            "title": self.title,
+            "id": self.room_id,
+            "boundary_walls": self.walls,
+            "field_objects": [obj.to_dict() for obj in self.objects.values()],
+            "travel_points": [
+                {
+                    "id": tp.id,
+                    "name": tp.name,
+                    "trigger_x": tp.trigger_x,
+                    "trigger_y": tp.trigger_y,
+                    "radius": tp.radius,
+                    "target_map": tp.target_map_id,
+                    "target_spawn": tp.target_spawn.to_dict() if hasattr(tp.target_spawn, "to_dict") else {}
+                }
+                for tp in self.travel_points
+            ],
+            "spawners": [
+                {
+                    "id": npc.id,
+                    "entity_type": "npc",
+                    "x": npc.position.x,
+                    "y": npc.position.y,
+                    "z": npc.position.z,
+                    "wander_radius": npc.wander_radius,
+                    "interval": npc.walk_interval,
+                    "npc_config": {
+                        "name": npc.name,
+                        "sound_asset": npc.sound_asset,
+                        "foley_asset": npc.foley_asset,
+                        "clothing": npc.clothing,
+                        "dialogue": npc.dialogue,
+                        "script_name": npc.script_name,
+                        "walk_interval": npc.walk_interval
+                    }
+                }
+                for npc in self.npcs.values()
+            ]
+        }
+
+    def load_persistent_state(self, save_path: str, now: float = 0.0) -> bool:
+        """Loads and restores saved room state (destroyed objects, built walls, spawned NPCs)."""
+        if not os.path.exists(save_path):
+            return False
+        try:
+            with open(save_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+
+            # 1. Restore object states (health, is_destroyed, timestamps)
+            saved_objs = saved.get("objects", {})
+            for obj_id, ostate in saved_objs.items():
+                obj = self.objects.get(obj_id)
+                if not obj:
+                    for o in self.objects.values():
+                        if str(o.id).lower() == str(obj_id).lower():
+                            obj = o
+                            break
+
+                if obj:
+                    obj.health = int(ostate.get("health", obj.health))
+                    obj.is_destroyed = bool(ostate.get("is_destroyed", False))
+                    obj.solid_obstacle = not obj.is_destroyed
+                    obj.destroyed_timestamp = float(ostate.get("destroyed_timestamp", 0.0))
+                    obj.regeneration = bool(ostate.get("regeneration", obj.regeneration))
+                    obj.respawn_time_seconds = int(ostate.get("respawn_time_seconds", obj.respawn_time_seconds))
+
+                    if not obj.regeneration:
+                        obj.destroyed_timestamp = 0.0
+
+                    if now > 0 and obj.is_destroyed and obj.regeneration and obj.destroyed_timestamp > 0:
+                        if (now - obj.destroyed_timestamp) >= obj.respawn_time_seconds:
+                            obj.is_destroyed = False
+                            obj.health = obj.max_health
+                            obj.solid_obstacle = True
+                            obj.destroyed_timestamp = 0.0
+
+            # 2. Restore saved walls (including player-built walls)
+            saved_walls = saved.get("walls", [])
+            for sw in saved_walls:
+                if not any(w.get("x1") == sw.get("x1") and w.get("y1") == sw.get("y1") and w.get("x2") == sw.get("x2") and w.get("y2") == sw.get("y2") for w in self.walls):
+                    self.walls.append(dict(sw))
+
+            # 3. Restore spawned NPCs
+            saved_npcs = saved.get("npcs", {})
+            for npc_id, nstate in saved_npcs.items():
+                if npc_id in self.npcs:
+                    npc = self.npcs[npc_id]
+                    pos_d = nstate.get("position", {})
+                    npc.position.x = float(pos_d.get("x", npc.position.x))
+                    npc.position.y = float(pos_d.get("y", npc.position.y))
+                    npc.position.z = float(pos_d.get("z", npc.position.z))
+                    npc.yaw = float(nstate.get("yaw", npc.yaw))
+                else:
+                    pos_d = nstate.get("position", {})
+                    pos = Vector3(float(pos_d.get("x", 0.0)), float(pos_d.get("y", 0.0)), float(pos_d.get("z", 0.0)))
+                    new_npc = NPCInstance(
+                        npc_id=npc_id,
+                        name=nstate.get("name", "NPC"),
+                        spawn_pos=pos,
+                        wander_radius=float(nstate.get("wander_radius", 5.0)),
+                        walk_interval=float(nstate.get("walk_interval", 3.0)),
+                        sound_asset=nstate.get("sound_asset", "footsteps/wood_1.wav"),
+                        foley_asset=nstate.get("foley_asset", "foley/regular/regular_1.wav"),
+                        clothing=nstate.get("clothing", "regular"),
+                        dialogue=nstate.get("dialogue", "Greetings, traveler."),
+                        script_name=nstate.get("script_name", "default_idle")
+                    )
+                    self.npcs[npc_id] = new_npc
+
+            print(f"[Server]: Restored persistent world state for room '{self.room_id}' ({len(self.objects)} objects, {len(self.npcs)} NPCs)")
+            return True
+        except Exception as e:
+            print(f"[Server]: Error loading persistent state for '{self.room_id}': {e}")
+            return False
+
+    def save_persistent_state(self, save_path: str) -> bool:
+        """Saves current authoritative state to disk."""
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+            saved_objs = {}
+            for obj in self.objects.values():
+                saved_objs[str(obj.id)] = {
+                    "health": obj.health,
+                    "max_health": obj.max_health,
+                    "is_destroyed": obj.is_destroyed,
+                    "destroyed_timestamp": obj.destroyed_timestamp,
+                    "regeneration": obj.regeneration,
+                    "respawn_time_seconds": obj.respawn_time_seconds
+                }
+
+            saved_npcs = {}
+            for npc in self.npcs.values():
+                saved_npcs[npc.id] = {
+                    "name": npc.name,
+                    "position": npc.position.to_dict(),
+                    "yaw": npc.yaw,
+                    "wander_radius": npc.wander_radius,
+                    "walk_interval": npc.walk_interval,
+                    "sound_asset": npc.sound_asset,
+                    "foley_asset": npc.foley_asset,
+                    "clothing": npc.clothing,
+                    "dialogue": npc.dialogue,
+                    "script_name": npc.script_name
+                }
+
+            data = {
+                "room_id": self.room_id,
+                "objects": saved_objs,
+                "walls": self.walls,
+                "npcs": saved_npcs,
+                "saved_at": time.time()
+            }
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return True
+        except Exception as e:
+            print(f"[Server]: Error saving persistent state for '{self.room_id}': {e}")
+            return False
 
     def damage_object(self, target_identifier: str, damage: int, now: float) -> Tuple[Optional[ServerWorldObject], bool]:
         """Server-authoritative damage calculation by unique ID or name."""
@@ -285,43 +449,55 @@ class RoomManager:
     """Tracks connected players and partitions them into virtual rooms."""
     def __init__(self):
         self.players: Dict[str, ConnectedPlayer] = {}
-        self.rooms: Dict[str, List[str]] = {"lounge": []}
-        self.room_states: Dict[str, RoomState] = {"lounge": RoomState("lounge")}
+        self.rooms: Dict[str, List[str]] = {"default_world": []}
+        self.room_states: Dict[str, RoomState] = {"default_world": RoomState("default_world")}
+
+    @staticmethod
+    def normalize_room_id(room_id: str) -> str:
+        clean = str(room_id).strip().replace(".json", "")
+        if clean in ("lounge", "resonance_lounge", ""):
+            return "default_world"
+        return clean
 
     def get_or_create_room(self, room_id: str) -> RoomState:
-        if room_id not in self.room_states:
-            self.room_states[room_id] = RoomState(room_id)
-            self.rooms[room_id] = []
-        return self.room_states[room_id]
+        norm_id = self.normalize_room_id(room_id)
+        if norm_id not in self.room_states:
+            self.room_states[norm_id] = RoomState(norm_id)
+            self.rooms[norm_id] = []
+        return self.room_states[norm_id]
 
     def add_player(self, writer, username: str, room_id: str, aura: AuraType) -> ConnectedPlayer:
-        self.get_or_create_room(room_id)
-        player = ConnectedPlayer(writer, username, initial_room=room_id, initial_aura=aura)
+        norm_id = self.normalize_room_id(room_id)
+        self.get_or_create_room(norm_id)
+        player = ConnectedPlayer(writer, username, initial_room=norm_id, initial_aura=aura)
         self.players[player.player_id] = player
-        self.rooms[room_id].append(player.player_id)
+        self.rooms[norm_id].append(player.player_id)
         return player
 
     def remove_player(self, player_id: str) -> Optional[ConnectedPlayer]:
         player = self.players.pop(player_id, None)
-        if player and player.room_id in self.rooms:
-            if player_id in self.rooms[player.room_id]:
-                self.rooms[player.room_id].remove(player_id)
+        if player:
+            norm_id = self.normalize_room_id(player.room_id)
+            if norm_id in self.rooms and player_id in self.rooms[norm_id]:
+                self.rooms[norm_id].remove(player_id)
         return player
 
     def change_room(self, player_id: str, new_room_id: str) -> bool:
         if player_id not in self.players:
             return False
 
-        self.get_or_create_room(new_room_id)
+        norm_id = self.normalize_room_id(new_room_id)
+        self.get_or_create_room(norm_id)
         player = self.players[player_id]
-        old_room = player.room_id
+        old_room = self.normalize_room_id(player.room_id)
         if old_room in self.rooms and player_id in self.rooms[old_room]:
             self.rooms[old_room].remove(player_id)
 
-        player.room_id = new_room_id
-        self.rooms[new_room_id].append(player_id)
+        player.room_id = norm_id
+        self.rooms[norm_id].append(player_id)
         return True
 
     def get_room_players(self, room_id: str) -> List[ConnectedPlayer]:
-        ids = self.rooms.get(room_id, [])
+        norm_id = self.normalize_room_id(room_id)
+        ids = self.rooms.get(norm_id, [])
         return [self.players[pid] for pid in ids if pid in self.players]

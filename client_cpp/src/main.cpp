@@ -527,7 +527,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             }
         }
 
-        // Multiplayer Incoming Events
+        // Multiplayer Incoming Events & State Synchronization
         if (isMultiplayer) {
             std::string ann;
             while (!(ann = net.pollAnnouncement()).empty()) {
@@ -544,6 +544,55 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                 audio.triggerAttackImpact(atkEv.impactPos, atkEv.material, atkEv.destroyed);
             }
 
+            RemoteEchoEvent echoEv;
+            while (net.pollEcho(echoEv)) {
+                audio.triggerEcholocation(echoEv.position, echoEv.yaw);
+            }
+
+            // 1. Process Authoritative Map Updates FIRST
+            json newMapJson;
+            std::string newMapTitle;
+            if (net.pollMapUpdate(newMapJson, newMapTitle)) {
+                // Cache destroyed and damaged object states from current world so map reload never rematerializes them
+                std::unordered_map<std::string, std::pair<int, bool>> prevObjStates;
+                for (const auto& obj : world.objects) {
+                    if (obj.isDestroyed || obj.health < obj.maxHealth) {
+                        prevObjStates[obj.id] = {obj.health, obj.isDestroyed};
+                        prevObjStates[obj.name] = {obj.health, obj.isDestroyed};
+                    }
+                }
+
+                if (world.load_from_json(newMapJson)) {
+                    // Reapply preserved damaged/destroyed states
+                    for (auto& obj : world.objects) {
+                        auto it = prevObjStates.find(obj.id);
+                        if (it == prevObjStates.end()) it = prevObjStates.find(obj.name);
+                        if (it != prevObjStates.end()) {
+                            obj.health = it->second.first;
+                            obj.isDestroyed = it->second.second;
+                            obj.solidObstacle = !obj.isDestroyed;
+                        }
+                    }
+
+                    audio.setMap(world);
+                    curSurface = world.get_surface_at(playerPos);
+                    curRegion = world.get_region_at(playerPos);
+                    curNearbyObj = world.get_nearby_object(playerPos);
+                    audio.updateAmbienceForPosition(playerPos);
+
+                    bool collided = false;
+                    std::string hitObs;
+                    world.try_move(playerPos, playerPos, collided, hitObs);
+                    if (collided) {
+                        playerPos = world.spawn_point;
+                        audio.setListener(playerPos, playerYaw);
+                    }
+
+                    sr.speak("World map updated live: " + newMapTitle + ".");
+                }
+            }
+
+            // 2. Process Authoritative Object State updates ON TOP of the loaded map
             ObjectStateEvent objEv;
             while (net.pollObjectState(objEv)) {
                 for (auto& o : world.objects) {
@@ -563,39 +612,40 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                 audio.setMap(world);
             }
 
-            RemoteEchoEvent echoEv;
-            while (net.pollEcho(echoEv)) {
-                audio.triggerEcholocation(echoEv.position, echoEv.yaw);
+            // Sync authoritative NPCs from network to world
+            auto netNpcs = net.getActiveNPCs();
+            if (!netNpcs.empty()) {
+                world.active_npcs = netNpcs;
             }
+        }
 
-            json newMapJson;
-            std::string newMapTitle;
-            if (net.pollMapUpdate(newMapJson, newMapTitle)) {
-                if (world.load_from_json(newMapJson)) {
-                    audio.setMap(world);
-                    curSurface = world.get_surface_at(playerPos);
-                    curRegion = world.get_region_at(playerPos);
-                    curNearbyObj = world.get_nearby_object(playerPos);
-                    audio.updateAmbienceForPosition(playerPos);
+        // Announce nearby NPCs on initial arrival / detection
+        static bool announcedJoinNpcs = false;
+        if (!announcedJoinNpcs && !world.active_npcs.empty()) {
+            announcedJoinNpcs = true;
+            auto nearby = world.get_nearby_npcs(playerPos, playerYaw, world.active_npcs, 25.0f);
+            if (!nearby.empty()) {
+                std::string npcAnn = "In area: ";
+                for (size_t i = 0; i < nearby.size(); ++i) {
+                    int d = (int)std::round(nearby[i].distance);
+                    npcAnn += nearby[i].name + " at " + std::to_string(d) + " tiles " + nearby[i].clockDirection + (i + 1 < nearby.size() ? ", " : ".");
+                }
+                sr.speak(npcAnn);
+            }
+        }
 
-                    bool collided = false;
-                    std::string hitObs;
-                    world.try_move(playerPos, playerPos, collided, hitObs);
-                    if (collided) {
-                        playerPos = world.spawn_point;
-                        audio.setListener(playerPos, playerYaw);
-                    }
-
-                    if (newMapTitle.find("Lounge") != std::string::npos || newMapTitle.find("default_world") != std::string::npos) {
-                        try {
-                            std::ofstream fOut("assets/maps/default_world.json");
-                            if (fOut.is_open()) {
-                                fOut << newMapJson.dump(2);
-                            }
-                        } catch (...) {}
-                    }
-
-                    sr.speak("World map updated live: " + newMapTitle + ".");
+        // Periodic 3D audible presence rustle/breathing for nearby stationary NPCs (every 3.5s)
+        static double lastNpcPresenceTime = 0.0;
+        if (now - lastNpcPresenceTime >= 3.5) {
+            lastNpcPresenceTime = now;
+            for (const auto& npc : world.active_npcs) {
+                float d = playerPos.distance_xy(npc.position);
+                if (d <= 20.0f) {
+                    SurfaceType nSurf = world.get_surface_at(npc.position);
+                    ClothingType nCloth = ClothingType::REGULAR;
+                    if (npc.clothing == "armor") nCloth = ClothingType::ARMOR;
+                    else if (npc.clothing == "naked") nCloth = ClothingType::NAKED;
+                    audio.triggerMovement(npc.position, nSurf, nCloth, false);
                 }
             }
         }
@@ -737,7 +787,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             // Interact with NPC or Structure (Hotkey 'E')
             bool keyE = (GetAsyncKeyState('E') & 0x8000) != 0;
             if (keyE && !prevKeyE) {
-                auto npcs = net.getActiveNPCs();
+                auto npcs = world.active_npcs;
                 bool foundNPC = false;
                 for (const auto& npc : npcs) {
                     float d = playerPos.distance_xy(npc.position);
@@ -817,7 +867,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             // Hotkey 'N': Look around at NPCs (Shift+N for accessible list)
             bool keyN = (GetAsyncKeyState('N') & 0x8000) != 0;
             if (keyN && !prevKeyN) {
-                auto nearbyNpcs = world.get_nearby_npcs(playerPos, playerYaw, net.getActiveNPCs(), 25.0f);
+                auto nearbyNpcs = world.get_nearby_npcs(playerPos, playerYaw, world.active_npcs, 25.0f);
                 if (shiftPressed) {
                     ShowAccessibleListDialog(hWnd, sr, "Nearby NPCs", nearbyNpcs);
                 } else {
@@ -859,7 +909,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             if (keyP && !prevKeyP) {
                 std::string radar;
                 auto remotePlayers = isMultiplayer ? net.getPlayers() : std::vector<RemotePlayer>{};
-                auto activeNpcs = net.getActiveNPCs();
+                auto activeNpcs = world.active_npcs;
 
                 if (remotePlayers.empty() && activeNpcs.empty()) {
                     sr.speak("No players or NPCs nearby.");

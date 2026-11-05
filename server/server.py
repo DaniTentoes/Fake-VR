@@ -34,6 +34,8 @@ class FakeVRServer:
         self.is_running = False
         self._writer_to_player: Dict[asyncio.StreamWriter, ConnectedPlayer] = {}
         self.maps_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "maps")
+        self.saves_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "saves")
+        os.makedirs(self.saves_dir, exist_ok=True)
         self.current_map_file = os.path.join(self.maps_dir, "default_world.json")
         self.current_map_data: dict = self._load_map_file(self.current_map_file)
         self.loaded_maps: Dict[str, dict] = {}
@@ -41,11 +43,16 @@ class FakeVRServer:
         # Preload all world maps, structures, and spawners at boot time so they exist as long as server is up
         self._preload_all_world_maps()
 
+    def _get_room_save_path(self, room_id: str) -> str:
+        clean = self.room_mgr.normalize_room_id(room_id)
+        return os.path.join(self.saves_dir, f"{clean}_world_state.json")
+
     def _preload_all_world_maps(self) -> None:
-        """Loads all map files and instantiates their spawners, NPCs and objects at boot."""
+        """Loads all map files, restores persistent states, and instantiates NPCs at boot."""
         if not os.path.isdir(self.maps_dir):
             return
 
+        now = time.time()
         for fname in os.listdir(self.maps_dir):
             if fname.endswith(".json"):
                 fpath = os.path.join(self.maps_dir, fname)
@@ -53,19 +60,14 @@ class FakeVRServer:
                 if not mdata:
                     continue
 
-                room_id = fname.replace(".json", "")
+                room_id = self.room_mgr.normalize_room_id(fname)
                 self.loaded_maps[room_id] = mdata
                 r_state = self.room_mgr.get_or_create_room(room_id)
                 r_state.populate_from_map_dict(mdata)
-
-                # For default_world.json, also alias to "lounge"
-                if fname == "default_world.json":
-                    lounge_state = self.room_mgr.get_or_create_room("lounge")
-                    lounge_state.populate_from_map_dict(mdata)
-                    self.loaded_maps["lounge"] = mdata
-                    print(f"[Server]: Boot preloaded world '{mdata.get('title')}' into rooms 'lounge' & 'default_world' ({len(lounge_state.npcs)} NPCs, {len(lounge_state.objects)} objects)")
-                else:
-                    print(f"[Server]: Boot preloaded map '{fname}' into room '{room_id}' ({len(r_state.npcs)} NPCs, {len(r_state.objects)} objects)")
+                # Restore persistent saved state (destroyed items, built walls, NPCs)
+                save_p = self._get_room_save_path(room_id)
+                r_state.load_persistent_state(save_p, now=now)
+                print(f"[Server]: Boot preloaded map '{fname}' into room '{room_id}' ({len(r_state.npcs)} NPCs, {len(r_state.objects)} objects)")
 
     def _load_map_file(self, path: str) -> dict:
         if os.path.exists(path):
@@ -84,6 +86,8 @@ class FakeVRServer:
 
     async def stop(self) -> None:
         self.is_running = False
+        for rid, rst in list(self.room_mgr.room_states.items()):
+            rst.save_persistent_state(self._get_room_save_path(rid))
         if self.server:
             self.server.close()
             await self.server.wait_closed()
@@ -131,13 +135,13 @@ class FakeVRServer:
                     }
                     await self._send_packet(writer, MessageType.S2C_WELCOME, welcome_payload)
 
-                    # Send authoritative map data
-                    if self.current_map_data:
-                        await self._send_packet(
-                            writer,
-                            MessageType.S2C_MAP_DATA,
-                            {"map": self.current_map_data}
-                        )
+                    # Send live authoritative map data with destroyed object states, walls, and spawners
+                    live_map = room_st.get_live_map_dict()
+                    await self._send_packet(
+                        writer,
+                        MessageType.S2C_MAP_DATA,
+                        {"map": live_map}
+                    )
 
                     # Send existing destroyed/damaged object states so client doesn't see broken objects
                     for obj in room_st.objects.values():
@@ -220,8 +224,9 @@ class FakeVRServer:
                             }
                         )
 
-                        # Broadcast synchronized object health to ALL clients
+                        # Broadcast synchronized object health to ALL clients and persist to disk
                         if obj:
+                            room_st.save_persistent_state(self._get_room_save_path(player.room_id))
                             await self._broadcast_to_room(
                                 player.room_id,
                                 MessageType.S2C_OBJECT_STATE,
@@ -246,6 +251,9 @@ class FakeVRServer:
                             "is_doorway": False
                         }
 
+                        room_st.walls.append(new_wall)
+                        room_st.save_persistent_state(self._get_room_save_path(player.room_id))
+
                         if "boundary_walls" not in self.current_map_data:
                             self.current_map_data["boundary_walls"] = []
                         self.current_map_data["boundary_walls"].append(new_wall)
@@ -258,14 +266,15 @@ class FakeVRServer:
                             print(f"[Server]: Failed saving map with player built wall: {e}")
 
                         # Broadcast live map update to all connected players
+                        live_map = room_st.get_live_map_dict()
                         for rid in self.room_mgr.rooms:
                             await self._broadcast_to_room(
                                 rid,
                                 MessageType.S2C_MAP_UPDATED,
                                 {
                                     "updated_by": player.username,
-                                    "title": self.current_map_data.get("title", "World"),
-                                    "map": self.current_map_data
+                                    "title": room_st.title,
+                                    "map": live_map
                                 }
                             )
                         print(f"[Server]: Wall erected by {player.username} from ({x1},{y1}) to ({x2},{y2})")
@@ -301,11 +310,12 @@ class FakeVRServer:
                             {"player_id": player.player_id, "username": player.username}
                         )
 
-                        # Welcome player to new room with map data
+                        # Welcome player to new room with live map data
+                        live_child_map = new_room_st.get_live_map_dict()
                         await self._send_packet(
                             writer,
                             MessageType.S2C_MAP_DATA,
-                            {"map": child_map_data}
+                            {"map": live_child_map}
                         )
 
                         # Send authoritative damaged/destroyed states in new room
@@ -339,6 +349,14 @@ class FakeVRServer:
                         if not npc:
                             for n in room_st.npcs.values():
                                 if n.id.lower() == target_id or n.name.lower() in target_id or target_id in n.name.lower():
+                                    npc = n
+                                    break
+                        if not npc:
+                            target_tokens = [t for t in target_id.replace("_", " ").split() if len(t) > 2 and t != "npc"]
+                            for n in room_st.npcs.values():
+                                n_id_lower = n.id.lower()
+                                n_name_lower = n.name.lower()
+                                if any(t in n_id_lower or t in n_name_lower for t in target_tokens):
                                     npc = n
                                     break
 
@@ -414,6 +432,9 @@ class FakeVRServer:
                             except Exception as e:
                                 print(f"[Server]: Failed saving spawned NPC to map: {e}")
 
+                        # Persist room state including spawned NPCs
+                        room_st.save_persistent_state(self._get_room_save_path(player.room_id))
+
                         # Immediately broadcast updated NPC list to all clients in the room!
                         await self._broadcast_to_room(
                             player.room_id,
@@ -487,6 +508,8 @@ class FakeVRServer:
         finally:
             if player:
                 print(f"[Server]: Player disconnected -> '{player.username}' ({player.player_id})")
+                r_st = self.room_mgr.get_or_create_room(player.room_id)
+                r_st.save_persistent_state(self._get_room_save_path(player.room_id))
                 self.room_mgr.remove_player(player.player_id)
                 self._writer_to_player.pop(writer, None)
                 await self._broadcast_to_room(
@@ -532,23 +555,26 @@ class FakeVRServer:
         interval = 1.0 / TICK_RATE_HZ
         npc_step_check_interval = 0.5
         last_npc_check = 0.0
+        last_auto_save = time.time()
 
         while self.is_running:
             now = time.time()
             start_time = asyncio.get_event_loop().time()
 
-            for room_id in list(self.room_mgr.rooms.keys()):
+            for room_id in list(self.room_mgr.room_states.keys()):
                 players = self.room_mgr.get_room_players(room_id)
                 room_st = self.room_mgr.get_or_create_room(room_id)
 
                 # Check and broadcast object respawns (configurable timer!)
                 respawned_objs = room_st.update_respawns(now)
-                for robj in respawned_objs:
-                    await self._broadcast_to_room(
-                        room_id,
-                        MessageType.S2C_OBJECT_RESPAWNED,
-                        robj.to_dict()
-                    )
+                if respawned_objs:
+                    room_st.save_persistent_state(self._get_room_save_path(room_id))
+                    for robj in respawned_objs:
+                        await self._broadcast_to_room(
+                            room_id,
+                            MessageType.S2C_OBJECT_RESPAWNED,
+                            robj.to_dict()
+                        )
 
                 # Simulate NPC steps and wander movement
                 if now - last_npc_check >= npc_step_check_interval:
@@ -571,6 +597,12 @@ class FakeVRServer:
 
             if now - last_npc_check >= npc_step_check_interval:
                 last_npc_check = now
+
+            # Periodic state auto-save every 15 seconds
+            if now - last_auto_save >= 15.0:
+                last_auto_save = now
+                for rid, rst in self.room_mgr.room_states.items():
+                    rst.save_persistent_state(self._get_room_save_path(rid))
 
             for p in self.room_mgr.players.values():
                 try:

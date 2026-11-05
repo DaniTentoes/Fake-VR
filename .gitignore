@@ -18,3 +18,7 @@ env/
 venv/
 *.log
 run_tunnel.ps1
+
+# Runtime persistent server saves
+assets/saves/*.json
+!assets/saves/.gitkeep

@@ -145,11 +145,12 @@ def test_server_boot_persistence_and_multi_maps():
     server = FakeVRServer(port=7799)
     
     # Verify all maps were preloaded into room states at boot
-    assert "lounge" in server.room_mgr.room_states
+    assert "default_world" in server.room_mgr.room_states
     assert "city_capital" in server.room_mgr.room_states
     assert "shop_blacksmith" in server.room_mgr.room_states
     
-    lounge = server.room_mgr.room_states["lounge"]
+    lounge = server.room_mgr.get_or_create_room("lounge")
+    assert lounge.room_id == "default_world"
     capital = server.room_mgr.room_states["city_capital"]
     blacksmith = server.room_mgr.room_states["shop_blacksmith"]
     
@@ -233,6 +234,62 @@ def test_unique_id_damage_and_no_duplicate_respawn():
     print("  -> Precise string ID targeting and anti-duplicate respawn PASSED.")
 
 
+def test_persistence_across_disconnect_and_relog():
+    print("\n[TEST 7] Testing Persistence Across Disconnect, Relog & Server Reboot...")
+    import tempfile
+    now = time.time()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        save_file = os.path.join(tmpdir, "test_room_world_state.json")
+        room_st = RoomState("test_room", "Test Persistent Room")
+        map_data = {
+            "title": "Test Persistent Room",
+            "objects": [
+                {"id": "couch_1", "name": "Sofa", "min_x": 0, "max_x": 2, "min_y": 0, "max_y": 1, "health": 100, "destructible": True, "regeneration": False, "respawn_time_seconds": 0},
+                {"id": "table_1", "name": "Table", "min_x": 3, "max_x": 4, "min_y": 0, "max_y": 1, "health": 100, "destructible": True, "regeneration": True, "respawn_time_seconds": 120}
+            ],
+            "spawners": [
+                {"id": "guard_1", "entity_type": "npc", "x": 5.0, "y": 5.0, "npc_config": {"name": "Guard Bob", "walk_interval": 3.0}}
+            ]
+        }
+        room_st.populate_from_map_dict(map_data)
+        assert len(room_st.objects) == 2
+        assert len(room_st.npcs) == 1
+
+        # Destroy sofa couch (non-regenerating)
+        obj_couch, dest_couch = room_st.damage_object("couch_1", 100, now)
+        assert dest_couch and obj_couch.is_destroyed
+        assert not obj_couch.solid_obstacle
+
+        # Damage table to 50 HP
+        obj_table, dest_table = room_st.damage_object("table_1", 50, now)
+        assert not dest_table and obj_table.health == 50
+
+        # Save persistent state (as happens on disconnect or attack)
+        room_st.save_persistent_state(save_file)
+        assert os.path.exists(save_file)
+
+        # Simulate fresh server reboot or new client login: fresh RoomState initialized from base map
+        rebooted_room = RoomState("test_room", "Test Persistent Room")
+        rebooted_room.populate_from_map_dict(map_data)
+        assert rebooted_room.objects["couch_1"].health == 100  # Before loading save, base map has 100
+
+        # Load saved persistent state
+        rebooted_room.load_persistent_state(save_file, now=now + 10.0)
+        assert rebooted_room.objects["couch_1"].is_destroyed == True
+        assert rebooted_room.objects["couch_1"].health == 0
+        assert rebooted_room.objects["couch_1"].solid_obstacle == False
+        assert rebooted_room.objects["table_1"].health == 50
+        assert "npc_guard_1" in rebooted_room.npcs or "guard_1" in rebooted_room.npcs
+
+        # Test live map dict serialization
+        live_dict = rebooted_room.get_live_map_dict()
+        couch_in_live = next(o for o in live_dict["field_objects"] if o["id"] == "couch_1")
+        assert couch_in_live["is_destroyed"] == True
+        assert couch_in_live["health"] == 0
+
+        print("  -> Persistent state across disconnect, relog & reboot PASSED.")
+
+
 if __name__ == "__main__":
     test_vector3_and_coordinates()
     test_server_authoritative_objects_and_respawn()
@@ -240,6 +297,7 @@ if __name__ == "__main__":
     test_npc_spawners_and_wander()
     test_server_boot_persistence_and_multi_maps()
     test_unique_id_damage_and_no_duplicate_respawn()
+    test_persistence_across_disconnect_and_relog()
     print("\n=======================================================")
     print("ALL CORE ARCHITECTURAL & UNIT TESTS PASSED SUCCESSFULLY!")
     print("=======================================================")

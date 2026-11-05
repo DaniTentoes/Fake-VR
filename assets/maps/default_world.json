@@ -64,6 +64,36 @@
       "reflectivity": 0.6,
       "name": "Testing Wall",
       "is_doorway": false
+    },
+    {
+      "x1": 5.0,
+      "y1": 5.0,
+      "x2": 5.0,
+      "y2": 10.0,
+      "material": "wood",
+      "reflectivity": 0.6,
+      "name": "Testing Wall",
+      "is_doorway": false
+    },
+    {
+      "x1": 5.0,
+      "y1": 5.0,
+      "x2": 5.0,
+      "y2": 10.0,
+      "material": "wood",
+      "reflectivity": 0.6,
+      "name": "Testing Wall",
+      "is_doorway": false
+    },
+    {
+      "x1": 5.0,
+      "y1": 5.0,
+      "x2": 5.0,
+      "y2": 10.0,
+      "material": "wood",
+      "reflectivity": 0.6,
+      "name": "Testing Wall",
+      "is_doorway": false
     }
   ],
   "default_surface": "tile",
@@ -474,17 +504,17 @@
   ],
   "spawners": [
     {
-      "id": "spawner_guard",
+      "id": "spawner_town_guard_cedric",
       "entity_type": "npc",
-      "x": 2.0,
-      "y": 25.0,
+      "x": -25.0,
+      "y": 13.0,
       "z": 0.0,
-      "interval": 6.0,
+      "interval": 3.0,
       "max_count": 1,
       "wander_radius": 6.0,
       "npc_config": {
         "name": "Town Guard Cedric",
-        "sound_asset": "footsteps/metal_1.wav",
+        "sound_asset": "footsteps/wood_1.wav",
         "foley_asset": "foley/armor/armor_1.wav",
         "voice_sound": "auras/hum.wav",
         "clothing": "armor",

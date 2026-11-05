@@ -399,6 +399,7 @@ struct WorldMap {
     std::vector<RoomRegion> regions;
     std::vector<TravelPoint> travel_points;
     std::vector<SpawnerConfig> spawners;
+    std::vector<ActiveNPC> active_npcs;
 
     SurfaceType get_surface_at(const Vector3& p) const {
         for (const auto& z : surface_zones) {
@@ -641,6 +642,32 @@ struct WorldMap {
                 }
             }
         }
+
+        // Raycast against Active NPCs (acoustically solid, clothing-material reflection)
+        for (const auto& npc : active_npcs) {
+            float nx1 = npc.position.x - 0.5f;
+            float nx2 = npc.position.x + 0.5f;
+            float ny1 = npc.position.y - 0.5f;
+            float ny2 = npc.position.y + 0.5f;
+
+            float t = 0.0f;
+            SurfaceType npcMat = SurfaceType::LEATHER_FABRIC;
+            if (npc.clothing == "armor") npcMat = SurfaceType::METAL;
+            float refl = (npcMat == SurfaceType::METAL) ? 0.90f : 0.45f;
+
+            if (intersect_ray_segment(origin.x, origin.y, dx, dy, nx1, ny1, nx2, ny1, t) ||
+                intersect_ray_segment(origin.x, origin.y, dx, dy, nx2, ny1, nx2, ny2, t) ||
+                intersect_ray_segment(origin.x, origin.y, dx, dy, nx2, ny2, nx1, ny2, t) ||
+                intersect_ray_segment(origin.x, origin.y, dx, dy, nx1, ny2, nx1, ny1, t)) {
+                if (t < best_t) {
+                    best_t = t;
+                    out_material = npcMat;
+                    out_reflectivity = refl;
+                    out_hit_name = "NPC " + npc.name;
+                }
+            }
+        }
+
         return best_t;
     }
 
@@ -709,6 +736,34 @@ struct WorldMap {
                     best_t = segT;
                     out_collided = true;
                     out_obstacle_name = "Player " + rp.username;
+                    float safe_dist = (std::max)(0.0f, segT - 0.40f);
+                    best_pos = Vector3(from.x + dir_x * safe_dist, from.y + dir_y * safe_dist, to.z);
+                }
+            }
+        }
+
+        // 3. Physical Collision with Active NPCs (1 Tile = 1.0m Box Obstacle)
+        for (const auto& npc : active_npcs) {
+            float nx1 = npc.position.x - 0.5f;
+            float nx2 = npc.position.x + 0.5f;
+            float ny1 = npc.position.y - 0.5f;
+            float ny2 = npc.position.y + 0.5f;
+
+            if (to.x >= nx1 && to.x <= nx2 && to.y >= ny1 && to.y <= ny2) {
+                out_collided = true;
+                out_obstacle_name = "NPC " + npc.name;
+                return from; // Block completely at the boundary of their tile
+            }
+
+            float segT = 0.0f;
+            if ((intersect_ray_segment(from.x, from.y, dir_x, dir_y, nx1, ny1, nx2, ny1, segT) ||
+                 intersect_ray_segment(from.x, from.y, dir_x, dir_y, nx2, ny1, nx2, ny2, segT) ||
+                 intersect_ray_segment(from.x, from.y, dir_x, dir_y, nx2, ny2, nx1, ny2, segT) ||
+                 intersect_ray_segment(from.x, from.y, dir_x, dir_y, nx1, ny2, nx1, ny1, segT)) && segT <= move_dist + 0.40f) {
+                if (segT < best_t) {
+                    best_t = segT;
+                    out_collided = true;
+                    out_obstacle_name = "NPC " + npc.name;
                     float safe_dist = (std::max)(0.0f, segT - 0.40f);
                     best_pos = Vector3(from.x + dir_x * safe_dist, from.y + dir_y * safe_dist, to.z);
                 }
@@ -817,7 +872,8 @@ struct WorldMap {
                 float x1, float x2, float y1, float y2, float h,
                 SurfaceType mat, int hp, bool canDestroy, bool regen, int regenSec,
                 const std::string& soundAsset = "", float soundVol = 0.8f, float sndRadius = 25.0f,
-                const std::string& prefix = "obj"
+                const std::string& prefix = "obj",
+                bool isDestroyed = false
             ) {
                 WorldObject obj;
                 obj.idIndex = nextObjId++;
@@ -837,10 +893,12 @@ struct WorldMap {
                 obj.height = h;
                 obj.material = mat;
                 obj.health = hp;
-                obj.maxHealth = hp;
+                obj.maxHealth = (hp > 0 ? hp : 100);
                 obj.destructible = canDestroy;
                 obj.regeneration = regen;
                 obj.respawnTimeSeconds = regenSec;
+                obj.isDestroyed = isDestroyed || (hp <= 0);
+                obj.solidObstacle = !obj.isDestroyed;
                 obj.soundAsset = soundAsset;
                 obj.soundVolume = soundVol;
                 obj.soundRadius = sndRadius;
@@ -896,6 +954,25 @@ struct WorldMap {
                     }
                     spawners.push_back(sc);
                 }
+
+                // Materialize spawners into active local NPCs (offline/standalone fallback)
+                active_npcs.clear();
+                for (const auto& sp : spawners) {
+                    if (sp.entityType == "npc") {
+                        ActiveNPC npc;
+                        npc.id = sp.id;
+                        npc.name = sp.npcName.empty() ? "Traveler" : sp.npcName;
+                        npc.position = sp.position;
+                        npc.homePosition = sp.position;
+                        npc.yaw = 0.0f;
+                        npc.wanderRadius = sp.wanderRadius;
+                        npc.soundAsset = sp.soundAsset;
+                        npc.foleyAsset = sp.foleyAsset;
+                        npc.clothing = sp.clothing;
+                        npc.dialogue = sp.dialogue;
+                        active_npcs.push_back(npc);
+                    }
+                }
             }
 
             // Load nested structures (e.g. house or shop entities)
@@ -933,7 +1010,9 @@ struct WorldMap {
                             std::string snd = o.value("sound_asset", "");
                             float svol = o.value("sound_volume", 0.8f);
                             float srad = o.value("sound_radius", 25.0f);
-                            add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "struct");
+                            bool isDestroyed = o.value("is_destroyed", false);
+                            if (hp <= 0) isDestroyed = true;
+                            add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "struct", isDestroyed);
                         }
                     }
                 }
@@ -956,7 +1035,9 @@ struct WorldMap {
                     std::string snd = o.value("sound_asset", "");
                     float svol = o.value("sound_volume", 0.8f);
                     float srad = o.value("sound_radius", 25.0f);
-                    add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "field");
+                    bool isDestroyed = o.value("is_destroyed", false);
+                    if (hp <= 0) isDestroyed = true;
+                    add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "field", isDestroyed);
                 }
             }
 
@@ -977,7 +1058,9 @@ struct WorldMap {
                     std::string snd = o.value("sound_asset", "");
                     float svol = o.value("sound_volume", 0.8f);
                     float srad = o.value("sound_radius", 25.0f);
-                    add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "obj");
+                    bool isDestroyed = o.value("is_destroyed", false);
+                    if (hp <= 0) isDestroyed = true;
+                    add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "obj", isDestroyed);
                 }
             }
 
