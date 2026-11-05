@@ -1,5 +1,5 @@
 {
-    "download_url":  "https://github.com/DaniTentoes/Fake-VR/releases/download/v1.1.4/FakeVR_Friend_Client.zip",
-    "changelog":  "Server-side map sync with Studio viewing, editing, and live push",
-    "version":  "1.1.4"
+    "download_url":  "https://github.com/DaniTentoes/Fake-VR/releases/download/v1.1.5/FakeVR_Friend_Client.zip",
+    "changelog":  "Fix client map packet buffer size and room mismatch for dynamic map synchronization",
+    "version":  "1.1.5"
 }
