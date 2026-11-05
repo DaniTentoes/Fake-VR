@@ -1,5 +1,5 @@
 {
-    "download_url":  "https://github.com/DaniTentoes/Fake-VR/releases/download/v1.0.4/FakeVR_Friend_Client.zip",
-    "changelog":  "Multiplayer 20Hz world position receiver and radar tracking fix",
-    "version":  "1.0.4"
+    "download_url":  "https://github.com/DaniTentoes/Fake-VR/releases/download/v1.0.9/FakeVR_Friend_Client.zip",
+    "changelog":  "Full nlohmann JSON multiplayer sync for radar and 3D player tracking",
+    "version":  "1.0.9"
 }
