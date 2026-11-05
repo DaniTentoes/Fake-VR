@@ -102,16 +102,26 @@ int main(int argc, char* argv[]) {
                 std::string updateMsg = "New update available: version " + remoteVer + ". Downloading update...";
                 speak(updateMsg);
 
-                // Run PowerShell updater to download and expand cleanly
+                // If NVDA DLL was loaded, unload it now so the file is not locked during extraction
+                if (hNvda) {
+                    FreeLibrary(hNvda);
+                    hNvda = NULL;
+                    nvdaSpeak = NULL;
+                }
+
+                // Run curl and native tar extraction (bsdtar overwrites by default unless -k is specified)
                 std::string psCmd = "powershell -Command \""
                                     "Write-Host 'Downloading update package...'; "
-                                    "Invoke-WebRequest -Uri '" + downloadUrl + "' -OutFile 'update.zip'; "
-                                    "Write-Host 'Extracting update...'; "
-                                    "Expand-Archive -Path 'update.zip' -DestinationPath '.' -Force; "
-                                    "Remove-Item 'update.zip' -Force; "
-                                    "Write-Host 'Update complete!';\"";
+                                    "curl.exe -L -o 'update.zip' '" + downloadUrl + "'; "
+                                    "if (Test-Path 'update.zip') { "
+                                    "  Write-Host 'Extracting update...'; "
+                                    "  tar.exe -xf 'update.zip' --exclude='bin/FakeVR_Launcher.exe'; "
+                                    "  Remove-Item 'update.zip' -Force; "
+                                    "  Write-Host 'Update complete!'; "
+                                    "}\"";
 
                 system(psCmd.c_str());
+                initSpeech();
                 speak("Update complete. Launching Fake-VR.");
             } else {
                 std::cout << "Client is up to date.\n";

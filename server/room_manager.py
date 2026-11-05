@@ -53,10 +53,13 @@ class RoomManager:
         self.players: Dict[str, ConnectedPlayer] = {}
         # Rooms mapping: room_id -> list of player_ids
         self.rooms: Dict[str, List[str]] = {rid: [] for rid in WORLD_REGISTRY}
+        # Add primary 'lounge' room so clients connecting to 'lounge' aren't remapped
+        if "lounge" not in self.rooms:
+            self.rooms["lounge"] = []
 
     def add_player(self, writer, username: str, room_id: str, aura: AuraType) -> ConnectedPlayer:
         if room_id not in self.rooms:
-            room_id = "resonance_lounge"
+            self.rooms[room_id] = []
 
         player = ConnectedPlayer(writer, username, initial_room=room_id, initial_aura=aura)
         self.players[player.player_id] = player

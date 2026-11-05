@@ -12,7 +12,7 @@ cl.exe /nologo /O2 /W3 /std:c++17 /EHsc /MD ^
     /I client_cpp\include ^
     /I steam_audio_sdk\steamaudio\include ^
     client_cpp\src\main.cpp ^
-    /link /LIBPATH:client_cpp\lib phonon.lib ole32.lib oleaut32.lib user32.lib advapi32.lib ^
+    /link /SUBSYSTEM:WINDOWS /LIBPATH:client_cpp\lib phonon.lib ole32.lib oleaut32.lib user32.lib gdi32.lib advapi32.lib comctl32.lib ^
     /OUT:bin\FakeVR_Client.exe
 
 if %errorlevel% equ 0 (

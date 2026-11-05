@@ -28,9 +28,12 @@ class MessageType(str, Enum):
     C2S_AURA_CHANGE = "c2s_aura_change"
     S2C_AURA_CHANGE = "s2c_aura_change"
 
-    # World Transitions
+    # World Transitions & Dynamic Map Sync
     C2S_ROOM_CHANGE = "c2s_room_change"
     S2C_ROOM_CHANGE = "s2c_room_change"
+    S2C_MAP_DATA = "s2c_map_data"
+    C2S_UPDATE_MAP = "c2s_update_map"
+    S2C_MAP_UPDATED = "s2c_map_updated"
 
     # Combat & Destruction
     C2S_ATTACK = "c2s_attack"

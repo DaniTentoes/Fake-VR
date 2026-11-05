@@ -6,6 +6,7 @@
 #include <ws2tcpip.h>
 
 #include "models.hpp"
+#include "nlohmann/json.hpp"
 #include <string>
 #include <vector>
 #include <thread>
@@ -14,6 +15,8 @@
 #include <queue>
 #include <iostream>
 #include <sstream>
+
+using json = nlohmann::json;
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -198,6 +201,15 @@ public:
         return true;
     }
 
+    bool pollMapUpdate(json& outMap, std::string& outTitle) {
+        std::lock_guard<std::mutex> lock(eventMutex);
+        if (!hasPendingMap) return false;
+        outMap = pendingMapJson;
+        outTitle = pendingMapTitle;
+        hasPendingMap = false;
+        return true;
+    }
+
     std::string pollAnnouncement() {
         std::lock_guard<std::mutex> lock(eventMutex);
         if (announcements.empty()) return "";
@@ -230,6 +242,9 @@ private:
     std::queue<RemoteAttackEvent> attackQueue;
     std::queue<RemoteEchoEvent> echoQueue;
     std::queue<std::string> announcements;
+    bool hasPendingMap = false;
+    json pendingMapJson;
+    std::string pendingMapTitle;
 
     void sendRaw(const std::string& data) {
         if (!connected || sock == INVALID_SOCKET) return;
@@ -247,18 +262,18 @@ private:
     }
 
     void receiveLoop() {
-        char buffer[4096];
+        std::vector<char> buffer(65536);
         std::string lineAcc;
 
         while (connected) {
-            int bytesRead = recv(sock, buffer, sizeof(buffer) - 1, 0);
+            int bytesRead = recv(sock, buffer.data(), (int)buffer.size() - 1, 0);
             if (bytesRead <= 0) {
                 connected = false;
                 break;
             }
 
             buffer[bytesRead] = '\0';
-            lineAcc.append(buffer, bytesRead);
+            lineAcc.append(buffer.data(), bytesRead);
 
             size_t newlinePos = 0;
             while ((newlinePos = lineAcc.find('\n')) != std::string::npos) {
@@ -270,164 +285,182 @@ private:
     }
 
     void handlePacketLine(const std::string& line) {
-        // Fast lightweight JSON parser for game events
-        std::string type = getJsonString(line, "type");
+        try {
+            json root = json::parse(line);
+            std::string type = root.value("type", "");
+            json payload = root.value("payload", json::object());
 
-        if (type == "s2c_welcome") {
-            myPlayerId = getJsonString(line, "player_id");
-            std::cout << "[Network]: Handshake accepted. Assigned Player ID: " << myPlayerId << "\n";
-            std::lock_guard<std::mutex> lock(eventMutex);
-            announcements.push("Connected to Fake-VR server. Ready for multiplayer.");
+            if (type == "s2c_welcome") {
+                myPlayerId = payload.value("player_id", "");
+                std::cout << "[Network]: Handshake accepted. Assigned Player ID: " << myPlayerId << "\n";
+                {
+                    std::lock_guard<std::mutex> lock(eventMutex);
+                    announcements.push("Connected to Fake-VR server. Ready for multiplayer.");
+                }
 
-            // Parse initial other_players list if any were already in the room
-            size_t othersPos = line.find("\"other_players\":[");
-            if (othersPos != std::string::npos) {
-                size_t start = othersPos + 17;
-                size_t end = line.find("]", start);
-                if (end != std::string::npos && end > start + 2) {
-                    std::string slice = line.substr(start, end - start);
-                    size_t pIndex = 0;
-                    while ((pIndex = slice.find("\"player_id\":\"", pIndex)) != std::string::npos) {
-                        pIndex += 13;
-                        size_t pEnd = slice.find("\"", pIndex);
-                        if (pEnd == std::string::npos) break;
-                        std::string pid = slice.substr(pIndex, pEnd - pIndex);
-
-                        std::string uname = "Player";
-                        size_t uPos = slice.find("\"username\":\"", pIndex);
-                        if (uPos != std::string::npos && uPos < slice.find("}", pIndex)) {
-                            uPos += 12;
-                            size_t uEnd = slice.find("\"", uPos);
-                            if (uEnd != std::string::npos) uname = slice.substr(uPos, uEnd - uPos);
+                if (payload.contains("other_players") && payload["other_players"].is_array()) {
+                    std::lock_guard<std::mutex> pLock(playerMutex);
+                    for (const auto& p : payload["other_players"]) {
+                        std::string pid = p.value("player_id", "");
+                        if (!pid.empty() && pid != myPlayerId) {
+                            RemotePlayer rp;
+                            rp.id = pid;
+                            rp.username = p.value("username", "Player");
+                            if (p.contains("position") && p["position"].is_object()) {
+                                rp.position.x = p["position"].value("x", 0.0f);
+                                rp.position.y = p["position"].value("y", 0.0f);
+                                rp.position.z = p["position"].value("z", 0.0f);
+                            }
+                            players[pid] = rp;
                         }
-
-                        if (pid != myPlayerId) {
-                            std::lock_guard<std::mutex> pLock(playerMutex);
-                            players[pid].id = pid;
-                            players[pid].username = uname;
-                        }
-                        pIndex = pEnd;
                     }
                 }
             }
-        }
-        else if (type == "s2c_player_joined") {
-            std::string uname = getJsonString(line, "username");
-            std::string pid = getJsonString(line, "player_id");
-            if (uname.empty()) uname = getJsonString(line, "name");
+            else if (type == "s2c_player_joined") {
+                json p = payload.contains("player") ? payload["player"] : payload;
+                std::string pid = p.value("player_id", "");
+                std::string uname = p.value("username", "Player");
 
-            if (!pid.empty() && pid != myPlayerId) {
-                std::lock_guard<std::mutex> pLock(playerMutex);
-                players[pid].id = pid;
-                players[pid].username = uname.empty() ? "Player" : uname;
+                if (!pid.empty() && pid != myPlayerId) {
+                    std::lock_guard<std::mutex> pLock(playerMutex);
+                    RemotePlayer rp;
+                    rp.id = pid;
+                    rp.username = uname;
+                    if (p.contains("position") && p["position"].is_object()) {
+                        rp.position.x = p["position"].value("x", 0.0f);
+                        rp.position.y = p["position"].value("y", 0.0f);
+                        rp.position.z = p["position"].value("z", 0.0f);
+                    }
+                    players[pid] = rp;
+                }
+
+                std::lock_guard<std::mutex> lock(eventMutex);
+                announcements.push(uname + " entered the world.");
             }
-
-            std::lock_guard<std::mutex> lock(eventMutex);
-            announcements.push(uname.empty() ? "Another player joined the world." : (uname + " entered the lounge."));
-        }
-        else if (type == "s2c_player_left") {
-            std::string uname = getJsonString(line, "username");
-            std::string pid = getJsonString(line, "player_id");
-            {
-                std::lock_guard<std::mutex> pLock(playerMutex);
-                players.erase(pid);
+            else if (type == "s2c_world_tick") {
+                if (payload.contains("players") && payload["players"].is_array()) {
+                    std::lock_guard<std::mutex> pLock(playerMutex);
+                    for (const auto& p : payload["players"]) {
+                        std::string pid = p.value("player_id", "");
+                        if (!pid.empty() && pid != myPlayerId) {
+                            RemotePlayer& rp = players[pid];
+                            rp.id = pid;
+                            if (p.contains("username")) rp.username = p.value("username", "Player");
+                            if (p.contains("position") && p["position"].is_object()) {
+                                rp.position.x = p["position"].value("x", 0.0f);
+                                rp.position.y = p["position"].value("y", 0.0f);
+                                rp.position.z = p["position"].value("z", 0.0f);
+                            }
+                            rp.yaw = p.value("yaw", 0.0f);
+                        }
+                    }
+                }
             }
-            std::lock_guard<std::mutex> lock(eventMutex);
-            announcements.push(uname.empty() ? "A player departed." : (uname + " left the world."));
-        }
-        else if (type == "c2s_move") { // Relayed step from another player
-            std::string pid = getJsonString(line, "player_id");
-            if (pid == myPlayerId) return; // ignore echo of self
-
-            Vector3 pos;
-            pos.x = getJsonFloat(line, "x");
-            pos.y = getJsonFloat(line, "y");
-            pos.z = getJsonFloat(line, "z");
-            std::string sSurf = getJsonString(line, "surface");
-            std::string sCloth = getJsonString(line, "clothing");
-
-            SurfaceType st = SurfaceType::WOOD;
-            if (sSurf == "stone") st = SurfaceType::STONE;
-            else if (sSurf == "carpet") st = SurfaceType::CARPET;
-            else if (sSurf == "grass") st = SurfaceType::GRASS;
-            else if (sSurf == "tile") st = SurfaceType::TILE;
-            else if (sSurf == "metal") st = SurfaceType::METAL;
-
-            ClothingType ct = ClothingType::REGULAR;
-            if (sCloth == "armor") ct = ClothingType::ARMOR;
-            else if (sCloth == "naked") ct = ClothingType::NAKED;
-
-            {
-                std::lock_guard<std::mutex> pLock(playerMutex);
-                players[pid].position = pos;
-                players[pid].surface = st;
-                players[pid].clothing = ct;
+            else if (type == "s2c_player_left") {
+                std::string pid = payload.value("player_id", "");
+                std::string uname = payload.value("username", "A player");
+                {
+                    std::lock_guard<std::mutex> pLock(playerMutex);
+                    players.erase(pid);
+                }
+                std::lock_guard<std::mutex> lock(eventMutex);
+                announcements.push(uname + " left the world.");
             }
+            else if (type == "c2s_move") {
+                std::string pid = payload.value("player_id", "");
+                if (pid == myPlayerId) return;
 
-            // Enqueue remote step audio trigger
-            std::lock_guard<std::mutex> lock(eventMutex);
-            stepQueue.push({pid, pos, st, ct});
-        }
-        else if (type == "s2c_echolocation_event") {
-            std::string pid = getJsonString(line, "player_id");
-            if (pid == myPlayerId) return;
+                Vector3 pos;
+                if (payload.contains("position") && payload["position"].is_object()) {
+                    pos.x = payload["position"].value("x", 0.0f);
+                    pos.y = payload["position"].value("y", 0.0f);
+                    pos.z = payload["position"].value("z", 0.0f);
+                }
+                std::string sSurf = payload.value("surface", "wood");
+                std::string sCloth = payload.value("clothing", "regular");
 
-            Vector3 pos;
-            pos.x = getJsonFloat(line, "x");
-            pos.y = getJsonFloat(line, "y");
-            pos.z = getJsonFloat(line, "z");
-            float yaw = getJsonFloat(line, "yaw");
+                SurfaceType st = SurfaceType::WOOD;
+                if (sSurf == "stone") st = SurfaceType::STONE;
+                else if (sSurf == "carpet") st = SurfaceType::CARPET;
+                else if (sSurf == "grass") st = SurfaceType::GRASS;
+                else if (sSurf == "tile") st = SurfaceType::TILE;
+                else if (sSurf == "metal") st = SurfaceType::METAL;
 
-            std::lock_guard<std::mutex> lock(eventMutex);
-            echoQueue.push({pid, pos, yaw});
-        }
-        else if (type == "s2c_attack_event") {
-            std::string pid = getJsonString(line, "player_id");
-            if (pid == myPlayerId) return;
+                ClothingType ct = ClothingType::REGULAR;
+                if (sCloth == "armor") ct = ClothingType::ARMOR;
+                else if (sCloth == "naked") ct = ClothingType::NAKED;
 
-            RemoteAttackEvent ev;
-            ev.playerId = pid;
-            ev.username = getJsonString(line, "username");
-            ev.targetName = getJsonString(line, "target_name");
-            std::string sMat = getJsonString(line, "material");
-            ev.material = SurfaceType::WOOD;
-            if (sMat == "glass") ev.material = SurfaceType::GLASS;
-            else if (sMat == "metal") ev.material = SurfaceType::METAL;
-            else if (sMat == "stone") ev.material = SurfaceType::STONE;
+                {
+                    std::lock_guard<std::mutex> pLock(playerMutex);
+                    players[pid].position = pos;
+                    players[pid].surface = st;
+                    players[pid].clothing = ct;
+                }
 
-            ev.destroyed = (line.find("\"destroyed\":true") != std::string::npos);
-            ev.impactPos.x = getJsonFloat(line, "x");
-            ev.impactPos.y = getJsonFloat(line, "y");
-            ev.impactPos.z = getJsonFloat(line, "z");
-
-            std::lock_guard<std::mutex> lock(eventMutex);
-            attackQueue.push(ev);
-            if (ev.destroyed) {
-                announcements.push(ev.username + " destroyed " + ev.targetName + "!");
+                std::lock_guard<std::mutex> lock(eventMutex);
+                stepQueue.push({pid, pos, st, ct});
             }
+            else if (type == "s2c_echolocation_event") {
+                std::string pid = payload.value("player_id", "");
+                if (pid == myPlayerId) return;
+
+                Vector3 pos;
+                if (payload.contains("position") && payload["position"].is_object()) {
+                    pos.x = payload["position"].value("x", 0.0f);
+                    pos.y = payload["position"].value("y", 0.0f);
+                    pos.z = payload["position"].value("z", 0.0f);
+                }
+                float yaw = payload.value("yaw", 0.0f);
+
+                std::lock_guard<std::mutex> lock(eventMutex);
+                echoQueue.push({pid, pos, yaw});
+            }
+            else if (type == "s2c_attack_event") {
+                std::string pid = payload.value("player_id", "");
+                if (pid == myPlayerId) return;
+
+                RemoteAttackEvent ev;
+                ev.playerId = pid;
+                ev.username = payload.value("username", "Someone");
+                ev.targetName = payload.value("target_name", "object");
+                std::string sMat = payload.value("material", "wood");
+                ev.material = SurfaceType::WOOD;
+                if (sMat == "glass") ev.material = SurfaceType::GLASS;
+                else if (sMat == "metal") ev.material = SurfaceType::METAL;
+                else if (sMat == "stone") ev.material = SurfaceType::STONE;
+
+                ev.destroyed = payload.value("destroyed", false);
+                if (payload.contains("impact_pos") && payload["impact_pos"].is_object()) {
+                    ev.impactPos.x = payload["impact_pos"].value("x", 0.0f);
+                    ev.impactPos.y = payload["impact_pos"].value("y", 0.0f);
+                    ev.impactPos.z = payload["impact_pos"].value("z", 0.0f);
+                }
+
+                std::lock_guard<std::mutex> lock(eventMutex);
+                attackQueue.push(ev);
+                if (ev.destroyed) {
+                    announcements.push(ev.username + " destroyed " + ev.targetName + "!");
+                }
+            }
+            else if (type == "s2c_map_data" || type == "s2c_map_updated") {
+                if (payload.contains("map") && payload["map"].is_object()) {
+                    std::string mTitle = payload.value("title", payload["map"].value("title", "Fake-VR World"));
+                    std::cout << "[Network]: Received authoritative map packet: '" << mTitle << "'\n";
+                    {
+                        std::lock_guard<std::mutex> lock(eventMutex);
+                        pendingMapJson = payload["map"];
+                        pendingMapTitle = mTitle;
+                        hasPendingMap = true;
+                        if (type == "s2c_map_updated") {
+                            std::string by = payload.value("updated_by", "Server");
+                            announcements.push("World map was updated in real-time by " + by + ".");
+                        }
+                    }
+                }
+            }
+        } catch (...) {
+            // Non-JSON or malformed packet
         }
-    }
-
-    // Ultra-lightweight JSON value extractors for zero external JSON library overhead
-    std::string getJsonString(const std::string& json, const std::string& key) {
-        std::string pattern = "\"" + key + "\":\"";
-        size_t pos = json.find(pattern);
-        if (pos == std::string::npos) return "";
-        pos += pattern.length();
-        size_t endPos = json.find("\"", pos);
-        if (endPos == std::string::npos) return "";
-        return json.substr(pos, endPos - pos);
-    }
-
-    float getJsonFloat(const std::string& json, const std::string& key) {
-        std::string pattern = "\"" + key + "\":";
-        size_t pos = json.find(pattern);
-        if (pos == std::string::npos) return 0.0f;
-        pos += pattern.length();
-        while (pos < json.length() && (json[pos] == ' ' || json[pos] == '"')) pos++;
-        char* endPtr = nullptr;
-        float val = std::strtof(&json[pos], &endPtr);
-        return val;
     }
 };
 

@@ -96,13 +96,21 @@ public:
             default: base = "wood"; break;
         }
 
-        // Pick one of 4 randomized variations: e.g. "footsteps/wood_2.wav"
-        int variant = (std::rand() % 4) + 1;
-        std::string varKey = "footsteps/" + base + "_" + std::to_string(variant) + ".wav";
-        const AudioBuffer* buf = get(varKey);
-        if (buf) return buf;
+        // Check if randomized variations exist (e.g. "footsteps/wood_1.wav" ... "wood_4.wav")
+        std::vector<std::string> availableVariants;
+        for (int i = 1; i <= 8; ++i) {
+            std::string candidate = "footsteps/" + base + "_" + std::to_string(i) + ".wav";
+            if (cache.find(candidate) != cache.end()) {
+                availableVariants.push_back(candidate);
+            }
+        }
 
-        // Fallback to non-variant
+        if (!availableVariants.empty()) {
+            int idx = std::rand() % availableVariants.size();
+            return get(availableVariants[idx]);
+        }
+
+        // Fallback to single base sound: e.g. "footsteps/wood.wav"
         return get("footsteps/" + base + ".wav");
     }
 

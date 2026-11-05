@@ -20,6 +20,7 @@ struct ActiveSound {
     float volume = 1.0f;
     bool isLocalHead = false;
     bool isFootstep = false;
+    bool isLooping = false;
     int spatialChannel = 0;
     int delaySamples = 0;
     int cursor = 0;
@@ -29,6 +30,10 @@ struct ActiveSound {
         outMono.assign(frames, 0.0f);
         const float* src = buffer ? buffer->samples.data() : syntheticBuffer.data();
         size_t total = buffer ? buffer->samples.size() : syntheticBuffer.size();
+        if (total == 0) {
+            finished = true;
+            return 0;
+        }
 
         if (delaySamples > 0) {
             if (delaySamples >= frames) {
@@ -43,18 +48,32 @@ struct ActiveSound {
                 outMono[skip + i] = src[cursor + i] * volume;
             }
             cursor += toCopy;
-            if (cursor >= (int)total) finished = true;
+            if (cursor >= (int)total) {
+                if (isLooping) cursor = 0;
+                else finished = true;
+            }
             return toCopy;
         }
 
-        int available = int(total - cursor);
-        int toCopy = (std::min)(frames, available);
-        for (int i = 0; i < toCopy; ++i) {
-            outMono[i] = src[cursor + i] * volume;
+        int copied = 0;
+        while (copied < frames) {
+            int available = int(total - cursor);
+            int toCopy = (std::min)(frames - copied, available);
+            for (int i = 0; i < toCopy; ++i) {
+                outMono[copied + i] = src[cursor + i] * volume;
+            }
+            copied += toCopy;
+            cursor += toCopy;
+            if (cursor >= (int)total) {
+                if (isLooping) {
+                    cursor = 0;
+                } else {
+                    finished = true;
+                    break;
+                }
+            }
         }
-        cursor += toCopy;
-        if (cursor >= (int)total) finished = true;
-        return toCopy;
+        return copied;
     }
 };
 
@@ -118,9 +137,90 @@ public:
         listenerYaw = yaw;
     }
 
+    void setAura(AuraType a) {
+        std::lock_guard<std::mutex> lock(audioMutex);
+        currentAura = a;
+    }
+
     void setMap(const WorldMap& m) {
         std::lock_guard<std::mutex> lock(audioMutex);
         currentMap = m;
+        refreshEmittingObjects();
+    }
+
+    void updateAmbienceForPosition(const Vector3& pos) {
+        std::lock_guard<std::mutex> lock(audioMutex);
+        const RoomRegion* r = currentMap.get_region_at(pos);
+        std::string neededAsset = "";
+        float neededVol = 0.40f;
+
+        if (r) {
+            if (!r->ambienceAsset.empty()) {
+                neededAsset = r->ambienceAsset;
+            } else if (r->ambienceCategory == "outdoor" || r->isOutside) {
+                neededAsset = "ambiences/outdoor/wind_field.wav";
+            } else {
+                neededAsset = "ambiences/indoor/room_tone.wav";
+            }
+            neededVol = r->ambienceVolume;
+        } else {
+            neededAsset = "ambiences/outdoor/wind_field.wav";
+        }
+
+        if (neededAsset != currentAmbienceFile) {
+            currentAmbienceFile = neededAsset;
+            const AudioBuffer* buf = soundBank.get(neededAsset);
+            if (!buf) {
+                // Try environment fallback
+                buf = soundBank.get("environment/resonance_ambient.wav");
+            }
+
+            if (buf && !buf->samples.empty()) {
+                ambienceSound.buffer = buf;
+                ambienceSound.volume = neededVol;
+                ambienceSound.isLocalHead = true;
+                ambienceSound.isLooping = true;
+                ambienceSound.cursor = 0;
+                ambienceSound.finished = false;
+                hasAmbience = true;
+            } else {
+                hasAmbience = false;
+            }
+        }
+    }
+
+    void refreshEmittingObjects() {
+        // Clear old emitting object sounds
+        for (auto& s : activeSounds) {
+            if (s.isLooping && !s.isLocalHead) {
+                s.finished = true;
+            }
+        }
+
+        // Spawn sustained spatial emitters for world objects that have soundAsset configured
+        int ch = 10;
+        for (const auto& obj : currentMap.objects) {
+            if (obj.isDestroyed || obj.soundAsset.empty()) continue;
+            const AudioBuffer* buf = soundBank.get(obj.soundAsset);
+            if (!buf) {
+                // Try prepending objects/ or auras/
+                buf = soundBank.get("objects/" + obj.soundAsset);
+                if (!buf) buf = soundBank.get("auras/" + obj.soundAsset);
+            }
+
+            if (buf && !buf->samples.empty()) {
+                ActiveSound emitter;
+                emitter.buffer = buf;
+                emitter.position = obj.get_center();
+                emitter.volume = obj.soundVolume;
+                emitter.isLocalHead = false;
+                emitter.isLooping = true;
+                emitter.cursor = 0;
+                emitter.finished = false;
+                emitter.spatialChannel = (ch++ % 6) + 10; // channels 10-15
+                activeSounds.push_back(std::move(emitter));
+            }
+        }
     }
 
     // Physical Movement Audio:
@@ -167,7 +267,27 @@ public:
             activeSounds.push_back(std::move(foleySnd));
         }
 
-        // 3. Early reflections off nearby walls and furniture objects
+        // 3. Acoustic Aura Texture (e.g. Vinyl crackle, crystal chime, sub-bass hum, silk rustle)
+        if (currentAura != AuraType::NONE) {
+            std::string auraKey = "auras/vinyl.wav";
+            if (currentAura == AuraType::CHIME) auraKey = "auras/chime.wav";
+            else if (currentAura == AuraType::HUM) auraKey = "auras/hum.wav";
+            else if (currentAura == AuraType::SILK) auraKey = "auras/silk.wav";
+
+            const AudioBuffer* auraBuf = soundBank.get(auraKey);
+            if (auraBuf && !auraBuf->samples.empty()) {
+                ActiveSound auraSnd;
+                auraSnd.buffer = auraBuf;
+                auraSnd.position = Vector3(pos.x, pos.y - 0.2f, pos.z);
+                auraSnd.volume = isLocal ? 0.75f : 0.55f;
+                auraSnd.isLocalHead = false;
+                auraSnd.isFootstep = true;
+                auraSnd.spatialChannel = 2;
+                activeSounds.push_back(std::move(auraSnd));
+            }
+        }
+
+        // 4. Early reflections off nearby walls and furniture objects
         if (footBuf && !footBuf->samples.empty()) {
             float footAngles[4] = {0.0f, 90.0f, 180.0f, 270.0f};
             for (int i = 0; i < 4; ++i) {
@@ -335,7 +455,13 @@ private:
     Vector3 listenerPos;
     float listenerYaw = 0.0f;
     WorldMap currentMap;
+    AuraType currentAura = AuraType::NONE;
     std::vector<ActiveSound> activeSounds;
+
+    // Sustained ambient beds & emitting objects
+    std::string currentAmbienceFile = "";
+    ActiveSound ambienceSound;
+    bool hasAmbience = false;
 
     std::vector<float> monoTemp;
     std::vector<float> reverbSend;
@@ -356,6 +482,18 @@ private:
         std::unique_lock<std::mutex> lock(audioMutex);
         Vector3 curPos = listenerPos;
         float curYaw = listenerYaw;
+
+        // Process sustained ambient background bed
+        if (hasAmbience) {
+            int ambCopied = ambienceSound.getNextFrames(frames, monoTemp);
+            if (ambCopied > 0) {
+                for (int i = 0; i < frames; ++i) {
+                    leftOut[i] += monoTemp[i] * 0.70f;
+                    rightOut[i] += monoTemp[i] * 0.70f;
+                    reverbSend[i] += monoTemp[i] * 0.20f;
+                }
+            }
+        }
 
         // Process active sounds & spatial reflections through independent Steam Audio HRTF channels
         for (auto it = activeSounds.begin(); it != activeSounds.end(); ) {

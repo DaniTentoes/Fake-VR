@@ -6,6 +6,8 @@ Listens on 0.0.0.0 and synchronizes spatial presence, acoustic auras, and echolo
 from __future__ import annotations
 import asyncio
 import socket
+import os
+import json
 from typing import Dict, Optional
 
 from shared.protocol import MessageType, encode_packet, decode_packet
@@ -25,6 +27,18 @@ class FakeVRServer:
         self.server: Optional[asyncio.Server] = None
         self.is_running = False
         self._writer_to_player: Dict[asyncio.StreamWriter, ConnectedPlayer] = {}
+        self.maps_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "maps")
+        self.current_map_file = os.path.join(self.maps_dir, "default_world.json")
+        self.current_map_data: dict = self._load_current_map()
+
+    def _load_current_map(self) -> dict:
+        if os.path.exists(self.current_map_file):
+            try:
+                with open(self.current_map_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"[Server]: Error loading map file: {e}")
+        return {}
 
     async def start(self) -> None:
         """Starts the TCP server and background broadcast tick loop."""
@@ -83,6 +97,14 @@ class FakeVRServer:
                         ]
                     }
                     await self._send_packet(writer, MessageType.S2C_WELCOME, welcome_payload)
+
+                    # Send authoritative map data to newly connected player
+                    if self.current_map_data:
+                        await self._send_packet(
+                            writer,
+                            MessageType.S2C_MAP_DATA,
+                            {"map": self.current_map_data}
+                        )
 
                     # Broadcast player joined to others in room
                     await self._broadcast_to_room(
@@ -179,6 +201,30 @@ class FakeVRServer:
                                 {"player": player.to_player_state().to_dict()},
                                 exclude_player_id=player.player_id
                             )
+
+                    elif msg_type == MessageType.C2S_UPDATE_MAP.value:
+                        new_map = payload.get("map")
+                        if new_map and isinstance(new_map, dict):
+                            self.current_map_data = new_map
+                            map_title = new_map.get("title", "Updated World")
+                            try:
+                                with open(self.current_map_file, "w", encoding="utf-8") as f:
+                                    json.dump(new_map, f, indent=2)
+                                print(f"[Server]: Map updated by {player.username} and saved to disk: '{map_title}'")
+                            except Exception as e:
+                                print(f"[Server]: Failed saving updated map: {e}")
+
+                            # Broadcast map update to all rooms and players on the server
+                            for rid in self.room_mgr.rooms:
+                                await self._broadcast_to_room(
+                                    rid,
+                                    MessageType.S2C_MAP_UPDATED,
+                                    {
+                                        "updated_by": player.username,
+                                        "title": map_title,
+                                        "map": self.current_map_data
+                                    }
+                                )
 
                     elif msg_type == MessageType.C2S_CHAT.value:
                         chat_text = payload.get("text", "")
