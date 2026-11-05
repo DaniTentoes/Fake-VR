@@ -56,7 +56,8 @@ struct RemoteStepEvent {
 };
 
 struct ObjectStateEvent {
-    int objectId = -1;
+    std::string objectId;
+    int legacyId = -1;
     std::string name;
     int health = 0;
     int maxHealth = 100;
@@ -177,17 +178,22 @@ public:
     }
 
     // Broadcast attack to server
-    void sendAttack(const std::string& targetName, SurfaceType mat, int damage, const Vector3& impactPos) {
+    void sendAttack(const std::string& targetId, const std::string& targetName, SurfaceType mat, int damage, const Vector3& impactPos) {
         if (!connected) return;
         std::string sMat = surface_to_string(mat);
         std::ostringstream ss;
         ss << "{\"type\":\"c2s_attack\",\"payload\":{"
+           << "\"target_id\":\"" << escapeJson(targetId) << "\","
            << "\"target_name\":\"" << escapeJson(targetName) << "\","
            << "\"material\":\"" << sMat << "\","
            << "\"damage\":" << damage << ","
            << "\"impact_pos\":{\"x\":" << impactPos.x << ",\"y\":" << impactPos.y << ",\"z\":" << impactPos.z << "}"
            << "}}\n";
         sendRaw(ss.str());
+    }
+
+    void sendAttack(const std::string& targetName, SurfaceType mat, int damage, const Vector3& impactPos) {
+        sendAttack("", targetName, mat, damage, impactPos);
     }
 
     // Building tool: erect a wall marked between Point A and Point B
@@ -540,7 +546,14 @@ private:
             }
             else if (type == "s2c_object_state" || type == "s2c_object_respawned") {
                 ObjectStateEvent ev;
-                ev.objectId = payload.value("id", -1);
+                if (payload.contains("id")) {
+                    if (payload["id"].is_string()) {
+                        ev.objectId = payload["id"].get<std::string>();
+                    } else if (payload["id"].is_number()) {
+                        ev.legacyId = payload["id"].get<int>();
+                        ev.objectId = std::to_string(ev.legacyId);
+                    }
+                }
                 ev.name = payload.value("name", "Object");
                 ev.health = payload.value("health", 100);
                 ev.maxHealth = payload.value("max_health", 100);

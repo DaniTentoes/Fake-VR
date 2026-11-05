@@ -91,7 +91,7 @@ class WallObstacle:
 @dataclass
 class ServerWorldObject:
     """Authoritative physical entity on the server."""
-    id: int
+    id: Any
     name: str
     min_x: float
     max_x: float
@@ -127,12 +127,19 @@ class ServerWorldObject:
         if self.health == 0:
             self.is_destroyed = True
             self.solid_obstacle = False
-            self.destroyed_timestamp = now_time
+            # Only record destruction timestamp if regeneration is enabled and timer is positive
+            if self.regeneration and self.respawn_time_seconds > 0:
+                self.destroyed_timestamp = now_time
+            else:
+                self.destroyed_timestamp = 0.0
             return True
         return False
 
     def check_respawn(self, now_time: float) -> bool:
-        if self.is_destroyed and self.regeneration and self.destroyed_timestamp > 0:
+        # Never respawn if regeneration is unchecked or timer is not positive
+        if not self.regeneration or self.respawn_time_seconds <= 0:
+            return False
+        if self.is_destroyed and self.destroyed_timestamp > 0:
             if (now_time - self.destroyed_timestamp) >= self.respawn_time_seconds:
                 self.is_destroyed = False
                 self.health = self.max_health

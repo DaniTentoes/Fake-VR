@@ -78,7 +78,10 @@
       "min_x": -1.2,
       "min_z": 7.5,
       "name": "Wooden Park Bench",
-      "regeneration": true
+      "regeneration": true,
+      "id": "field_wooden_park_bench",
+      "min_y": 7.5,
+      "max_y": 8.3
     },
     {
       "destructible": true,
@@ -90,7 +93,10 @@
       "min_x": 12.0,
       "min_z": 16.0,
       "name": "Steel Tool Shed",
-      "regeneration": true
+      "regeneration": true,
+      "id": "field_steel_tool_shed",
+      "min_y": 16.0,
+      "max_y": 20.0
     },
     {
       "destructible": true,
@@ -102,7 +108,10 @@
       "min_x": -14.0,
       "min_z": 13.0,
       "name": "Granite Boulder",
-      "regeneration": true
+      "regeneration": true,
+      "id": "field_granite_boulder",
+      "min_y": 13.0,
+      "max_y": 17.0
     },
     {
       "destructible": true,
@@ -114,7 +123,10 @@
       "min_x": -4.0,
       "min_z": 26.0,
       "name": "Wooden Gazebo Pavilion",
-      "regeneration": true
+      "regeneration": true,
+      "id": "field_wooden_gazebo_pavilion",
+      "min_y": 26.0,
+      "max_y": 30.0
     },
     {
       "destructible": true,
@@ -126,7 +138,10 @@
       "min_x": -22.0,
       "min_z": 35.0,
       "name": "Metal Cargo Container",
-      "regeneration": true
+      "regeneration": true,
+      "id": "field_metal_cargo_container",
+      "min_y": 35.0,
+      "max_y": 41.0
     },
     {
       "destructible": true,
@@ -140,7 +155,10 @@
       "name": "Stone Water Well",
       "regeneration": true,
       "sound_asset": "objects/well_drops.wav",
-      "sound_volume": 0.75
+      "sound_volume": 0.75,
+      "id": "field_stone_water_well",
+      "min_y": 38.0,
+      "max_y": 41.0
     },
     {
       "destructible": true,
@@ -152,7 +170,10 @@
       "min_x": -8.0,
       "min_z": 48.0,
       "name": "Lumber Stack Pile",
-      "regeneration": true
+      "regeneration": true,
+      "id": "field_lumber_stack_pile",
+      "min_y": 48.0,
+      "max_y": 52.0
     },
     {
       "destructible": true,
@@ -164,7 +185,10 @@
       "min_x": 18.0,
       "min_z": 45.0,
       "name": "Glass Greenhouse Nursery",
-      "regeneration": true
+      "regeneration": true,
+      "id": "field_glass_greenhouse_nursery",
+      "min_y": 45.0,
+      "max_y": 55.0
     },
     {
       "health": 1,
@@ -176,7 +200,10 @@
       "name": "Toilet with heavy caca",
       "regeneration": false,
       "sound_asset": "objects/toilet_caca.wav",
-      "sound_volume": 0.1
+      "sound_volume": 0.1,
+      "id": "field_toilet_with_heavy_caca",
+      "min_y": 15.0,
+      "max_y": 17.0
     },
     {
       "destructible": true,
@@ -188,41 +215,10 @@
       "min_x": -3.0,
       "min_z": 80.0,
       "name": "Ancient Stone Monolith",
-      "regeneration": true
-    },
-    {
-      "destructible": true,
-      "health": 1,
-      "material": "glass",
-      "max_x": -21.0,
-      "max_y": 17.0,
-      "max_z": 17.0,
-      "min_x": -23.0,
-      "min_y": 15.0,
-      "min_z": 15.0,
-      "name": "Toilet with heavy caca",
-      "regeneration": false,
-      "respawn_time_seconds": 6,
-      "sound_asset": "objects/toilet_caca.wav",
-      "sound_radius": 25.0,
-      "sound_volume": 0.8
-    },
-    {
-      "destructible": true,
-      "health": 1,
-      "material": "glass",
-      "max_x": -21.0,
-      "max_y": 17.0,
-      "max_z": 17.0,
-      "min_x": -23.0,
-      "min_y": 15.0,
-      "min_z": 15.0,
-      "name": "Toilet with heavy caca",
       "regeneration": true,
-      "respawn_time_seconds": 6,
-      "sound_asset": "objects/toilet_caca.wav",
-      "sound_radius": 25.0,
-      "sound_volume": 0.8
+      "id": "field_ancient_stone_monolith",
+      "min_y": 80.0,
+      "max_y": 84.0
     }
   ],
   "id": "lounge_and_field",
@@ -287,7 +283,10 @@
           "name": "Taliti",
           "regeneration": true,
           "sound_asset": "objects/creepy_whisper.wav",
-          "sound_volume": 0.1
+          "sound_volume": 0.1,
+          "id": "struct_taliti",
+          "min_y": -3.0,
+          "max_y": -1.0
         },
         {
           "destructible": true,
@@ -299,7 +298,10 @@
           "min_x": 1.8,
           "min_z": -3.4,
           "name": "Metal Equipment Rack",
-          "regeneration": true
+          "regeneration": true,
+          "id": "struct_metal_equipment_rack",
+          "min_y": -3.4,
+          "max_y": -2.4
         },
         {
           "destructible": true,
@@ -311,7 +313,10 @@
           "min_x": 2.5,
           "min_z": -1.5,
           "name": "Wooden Bookcase",
-          "regeneration": true
+          "regeneration": true,
+          "id": "struct_wooden_bookcase",
+          "min_y": -1.5,
+          "max_y": 1.5
         },
         {
           "destructible": true,
@@ -323,7 +328,10 @@
           "min_x": 1.8,
           "min_z": 2.2,
           "name": "Glass Display Cabinet",
-          "regeneration": true
+          "regeneration": true,
+          "id": "struct_glass_display_cabinet",
+          "min_y": 2.2,
+          "max_y": 3.2
         },
         {
           "health": 100,
@@ -333,24 +341,10 @@
           "min_x": -1.1,
           "min_z": -0.5,
           "name": "Horrid Oak Coffee Table",
-          "regeneration": true
-        },
-        {
-          "destructible": true,
-          "health": 230,
-          "material": "glass",
-          "max_x": -1.0,
-          "max_y": -1.0,
-          "max_z": -1.0,
-          "min_x": -2.0,
-          "min_y": -3.0,
-          "min_z": -3.0,
-          "name": "Taliti",
           "regeneration": true,
-          "respawn_time_seconds": 5,
-          "sound_asset": "objects/creepy_whisper.wav",
-          "sound_radius": 25.0,
-          "sound_volume": 0.8
+          "id": "struct_horrid_oak_coffee_table",
+          "min_y": -0.5,
+          "max_y": 0.5
         }
       ],
       "name": "Residential House (Lounge)",
@@ -450,7 +444,34 @@
     }
   ],
   "title": "Lounge & Great Outdoor Field",
-  "travel_points": [],
+  "travel_points": [
+    {
+      "id": "tp_to_capital",
+      "name": "North Highway to Grand Capital City",
+      "trigger_x": 0.0,
+      "trigger_y": 102.0,
+      "radius": 3.0,
+      "target_map": "city_capital.json",
+      "target_spawn": {
+        "x": 0.0,
+        "y": -35.0,
+        "z": 0.0
+      }
+    },
+    {
+      "id": "tp_to_blacksmith",
+      "name": "Smoldering Blacksmith Workshop Door",
+      "trigger_x": 14.0,
+      "trigger_y": 16.0,
+      "radius": 2.5,
+      "target_map": "shop_blacksmith.json",
+      "target_spawn": {
+        "x": 0.0,
+        "y": -4.0,
+        "z": 0.0
+      }
+    }
+  ],
   "spawners": [
     {
       "id": "spawner_guard",

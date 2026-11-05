@@ -36,10 +36,36 @@ class FakeVRServer:
         self.maps_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "maps")
         self.current_map_file = os.path.join(self.maps_dir, "default_world.json")
         self.current_map_data: dict = self._load_map_file(self.current_map_file)
+        self.loaded_maps: Dict[str, dict] = {}
 
-        # Initialize primary room with map data
-        lounge_room = self.room_mgr.get_or_create_room("lounge")
-        lounge_room.populate_from_map_dict(self.current_map_data)
+        # Preload all world maps, structures, and spawners at boot time so they exist as long as server is up
+        self._preload_all_world_maps()
+
+    def _preload_all_world_maps(self) -> None:
+        """Loads all map files and instantiates their spawners, NPCs and objects at boot."""
+        if not os.path.isdir(self.maps_dir):
+            return
+
+        for fname in os.listdir(self.maps_dir):
+            if fname.endswith(".json"):
+                fpath = os.path.join(self.maps_dir, fname)
+                mdata = self._load_map_file(fpath)
+                if not mdata:
+                    continue
+
+                room_id = fname.replace(".json", "")
+                self.loaded_maps[room_id] = mdata
+                r_state = self.room_mgr.get_or_create_room(room_id)
+                r_state.populate_from_map_dict(mdata)
+
+                # For default_world.json, also alias to "lounge"
+                if fname == "default_world.json":
+                    lounge_state = self.room_mgr.get_or_create_room("lounge")
+                    lounge_state.populate_from_map_dict(mdata)
+                    self.loaded_maps["lounge"] = mdata
+                    print(f"[Server]: Boot preloaded world '{mdata.get('title')}' into rooms 'lounge' & 'default_world' ({len(lounge_state.npcs)} NPCs, {len(lounge_state.objects)} objects)")
+                else:
+                    print(f"[Server]: Boot preloaded map '{fname}' into room '{room_id}' ({len(r_state.npcs)} NPCs, {len(r_state.objects)} objects)")
 
     def _load_map_file(self, path: str) -> dict:
         if os.path.exists(path):
@@ -167,13 +193,18 @@ class FakeVRServer:
                             )
 
                     elif msg_type == MessageType.C2S_ATTACK.value:
+                        target_id = payload.get("target_id", "")
                         target_name = payload.get("target_name", "")
                         mat_val = payload.get("material", "wood")
                         damage = int(payload.get("damage", 25))
                         impact_dict = payload.get("impact_pos", player.position.to_dict())
 
-                        # Authoritative Server Object Damage Check
-                        obj, was_destroyed = room_st.damage_object(target_name, damage, time.time())
+                        # Authoritative Server Object Damage Check (look up by ID first, fallback to name)
+                        lookup_key = target_id if target_id else target_name
+                        obj, was_destroyed = room_st.damage_object(lookup_key, damage, time.time())
+
+                        broadcast_target_name = obj.name if obj else target_name
+                        broadcast_target_id = obj.id if obj else target_id
 
                         await self._broadcast_to_room(
                             player.room_id,
@@ -181,7 +212,8 @@ class FakeVRServer:
                             {
                                 "player_id": player.player_id,
                                 "username": player.username,
-                                "target_name": target_name,
+                                "target_id": broadcast_target_id,
+                                "target_name": broadcast_target_name,
                                 "material": mat_val,
                                 "destroyed": was_destroyed,
                                 "impact_pos": impact_dict
@@ -245,15 +277,19 @@ class FakeVRServer:
                         target_room_id = target_map.replace(".json", "")
 
                         print(f"[Server]: Player {player.username} traveling to '{target_map}'")
-                        map_path = os.path.join(self.maps_dir, target_map)
-                        child_map_data = self._load_map_file(map_path)
+                        child_map_data = self.loaded_maps.get(target_room_id)
                         if not child_map_data:
-                            child_map_data = self.current_map_data
+                            map_path = os.path.join(self.maps_dir, target_map)
+                            child_map_data = self._load_map_file(map_path)
+                            if not child_map_data:
+                                child_map_data = self.current_map_data
+                            self.loaded_maps[target_room_id] = child_map_data
 
                         old_room = player.room_id
                         self.room_mgr.change_room(player.player_id, target_room_id)
                         new_room_st = self.room_mgr.get_or_create_room(target_room_id)
-                        new_room_st.populate_from_map_dict(child_map_data)
+                        if not new_room_st.objects and not new_room_st.walls:
+                            new_room_st.populate_from_map_dict(child_map_data)
 
                         if spawn_dict:
                             player.position = Vector3.from_dict(spawn_dict)
@@ -271,6 +307,23 @@ class FakeVRServer:
                             MessageType.S2C_MAP_DATA,
                             {"map": child_map_data}
                         )
+
+                        # Send authoritative damaged/destroyed states in new room
+                        for obj in new_room_st.objects.values():
+                            if obj.is_destroyed or obj.health < obj.max_health:
+                                await self._send_packet(
+                                    writer,
+                                    MessageType.S2C_OBJECT_STATE,
+                                    obj.to_dict()
+                                )
+
+                        # Send current active NPCs in new room
+                        if new_room_st.npcs:
+                            await self._send_packet(
+                                writer,
+                                MessageType.S2C_NPC_UPDATE,
+                                {"npcs": [npc.to_dict() for npc in new_room_st.npcs.values()]}
+                            )
 
                         # Notify new room
                         await self._broadcast_to_room(

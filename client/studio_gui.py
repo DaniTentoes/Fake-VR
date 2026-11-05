@@ -543,7 +543,17 @@ class MapBuilderPanel(wx.Panel):
             wx.MessageBox("Coordinates, health, volume, and timer must be valid numbers.", "Validation", wx.ICON_ERROR)
             return
 
+        sel = self.lst_entities.GetSelection()
+        existing_id = None
+        if sel != wx.NOT_FOUND and 0 <= sel < len(self.objects):
+            if self.objects[sel].get("name") == name:
+                existing_id = self.objects[sel].get("id")
+
+        sanitized_name = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
+        obj_id = existing_id or f"obj_{sanitized_name}_{int(min_x)}_{int(min_y)}"
+
         obj = {
+            "id": obj_id,
             "name": name,
             "material": mat,
             "min_x": min_x,
@@ -562,9 +572,16 @@ class MapBuilderPanel(wx.Panel):
             "_location": "Outdoor Field" if min_y >= 4.0 else "Inside Lounge"
         }
 
-        self.objects.append(obj)
         snd_tag = f" [Sound: {snd}]" if snd else ""
-        self.lst_entities.Append(f"{name} ({mat}){snd_tag} [X: {min_x}-{max_x}, Y: {min_y}-{max_y}] - {sec}s")
+        item_text = f"{name} ({mat}){snd_tag} [X: {min_x}-{max_x}, Y: {min_y}-{max_y}] - {sec}s"
+
+        if sel != wx.NOT_FOUND and 0 <= sel < len(self.objects) and self.objects[sel].get("name") == name:
+            self.objects[sel] = obj
+            self.lst_entities.SetString(sel, item_text)
+        else:
+            self.objects.append(obj)
+            self.lst_entities.Append(item_text)
+
         if self.spawner_panel_ref:
             self.spawner_panel_ref.refresh_spawners_from_map(self.spawners)
 
@@ -574,6 +591,8 @@ class MapBuilderPanel(wx.Panel):
         sel = self.lst_entities.GetSelection()
         if sel != wx.NOT_FOUND:
             self.lst_entities.Delete(sel)
+            if 0 <= sel < len(self.objects):
+                self.objects.pop(sel)
 
     def assemble_full_map_dict(self):
         data = dict(self.raw_map_data)
@@ -589,6 +608,16 @@ class MapBuilderPanel(wx.Panel):
             if r.get("id") == "outside" or r.get("is_outside"):
                 r["ambience_category"] = amb_cat
                 r["ambience_asset"] = f"ambiences/{amb_cat}/wind_field.wav" if amb_cat == "outdoor" else f"ambiences/{amb_cat}/room_tone.wav"
+
+        # Deduplicate objects by ID or position before saving
+        seen_keys = set()
+        deduped = []
+        for o in self.objects:
+            oid = o.get("id") or f"{o.get('name')}_{o.get('min_x')}_{o.get('min_y', o.get('min_z'))}"
+            if oid not in seen_keys:
+                seen_keys.add(oid)
+                deduped.append(o)
+        self.objects = deduped
 
         interior_objs = []
         field_objs = []

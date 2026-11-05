@@ -147,7 +147,7 @@ class RoomState:
 
         # Helper to load objects
         next_id = 0
-        def add_obj_from_dict(d: dict):
+        def add_obj_from_dict(d: dict, prefix: str = "obj"):
             nonlocal next_id
             name = d.get("name", "Object")
             mat_str = d.get("material", "wood")
@@ -160,8 +160,16 @@ class RoomState:
             min_y = float(d.get("min_y", d.get("min_z", 0.0)))
             max_y = float(d.get("max_y", d.get("max_z", 0.0)))
 
+            # Persistent Unique ID
+            raw_id = d.get("id")
+            if raw_id:
+                obj_id = str(raw_id)
+            else:
+                sanitized_name = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
+                obj_id = f"{prefix}_{sanitized_name}_{int(d.get('min_x', 0))}_{int(min_y)}"
+
             obj = ServerWorldObject(
-                id=next_id,
+                id=obj_id,
                 name=name,
                 min_x=float(d.get("min_x", 0.0)),
                 max_x=float(d.get("max_x", 0.0)),
@@ -178,19 +186,18 @@ class RoomState:
                 sound_volume=float(d.get("sound_volume", 0.8)),
                 sound_radius=float(d.get("sound_radius", 25.0))
             )
-            self.objects[str(next_id)] = obj
-            self.objects[name.lower()] = obj
+            self.objects[obj_id] = obj
             next_id += 1
 
-        for o in data.get("field_objects", []):
-            add_obj_from_dict(o)
-        for o in data.get("objects", []):
-            add_obj_from_dict(o)
         for s in data.get("structures", []):
             for o in s.get("interior_objects", []):
-                add_obj_from_dict(o)
+                add_obj_from_dict(o, prefix="struct")
             for w in s.get("walls", []):
                 self.walls.append(dict(w))
+        for o in data.get("field_objects", []):
+            add_obj_from_dict(o, prefix="field")
+        for o in data.get("objects", []):
+            add_obj_from_dict(o, prefix="obj")
 
         # Load travel points
         for tp in data.get("travel_points", []):
@@ -231,14 +238,24 @@ class RoomState:
                 )
                 self.npcs[npc.id] = npc
 
-    def damage_object(self, target_name: str, damage: int, now: float) -> Tuple[Optional[ServerWorldObject], bool]:
-        """Server-authoritative damage calculation."""
-        target_key = target_name.strip().lower()
-        obj = self.objects.get(target_key)
+    def damage_object(self, target_identifier: str, damage: int, now: float) -> Tuple[Optional[ServerWorldObject], bool]:
+        """Server-authoritative damage calculation by unique ID or name."""
+        if not target_identifier:
+            return None, False
+        target_key = str(target_identifier).strip().lower()
+
+        # 1. Direct match by unique string ID
+        obj = self.objects.get(target_identifier) or self.objects.get(target_key)
         if not obj:
-            # Check by name substring
+            # 2. Match by exact name
             for o in self.objects.values():
                 if o.name.lower() == target_key:
+                    obj = o
+                    break
+        if not obj:
+            # 3. Match by name substring
+            for o in self.objects.values():
+                if target_key in o.name.lower() or o.name.lower() in target_key:
                     obj = o
                     break
 
@@ -250,11 +267,7 @@ class RoomState:
     def update_respawns(self, now: float) -> List[ServerWorldObject]:
         """Respawn check respecting configurable timer and regeneration checkbox."""
         respawned = []
-        seen_ids = set()
         for obj in list(self.objects.values()):
-            if obj.id in seen_ids:
-                continue
-            seen_ids.add(obj.id)
             if obj.check_respawn(now):
                 respawned.append(obj)
         return respawned

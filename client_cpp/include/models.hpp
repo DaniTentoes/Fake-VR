@@ -170,7 +170,8 @@ inline AcousticMaterialProps get_material_acoustics(SurfaceType mat) {
 
 // 3D Physical Object occupying space in the world (authoritative server sync supported)
 struct WorldObject {
-    int id = 0;
+    int idIndex = 0;
+    std::string id = "";
     std::string name;
     float min_x = 0.0f, max_x = 0.0f;
     float min_y = 0.0f, max_y = 0.0f; // North/South horizontal bounds
@@ -207,14 +208,18 @@ struct WorldObject {
             health = 0;
             isDestroyed = true;
             solidObstacle = false;
-            destroyedAtMs = nowMs;
+            if (regeneration && respawnTimeSeconds > 0) {
+                destroyedAtMs = nowMs;
+            } else {
+                destroyedAtMs = 0;
+            }
         }
     }
 
     bool check_regeneration(unsigned long long nowMs) {
-        if (!regeneration || respawnTimeSeconds <= 0) return false;
+        if (!regeneration || respawnTimeSeconds <= 0 || destroyedAtMs == 0) return false;
         unsigned long long delayMs = (unsigned long long)respawnTimeSeconds * 1000ULL;
-        if (isDestroyed && destroyedAtMs > 0 && (nowMs - destroyedAtMs >= delayMs)) {
+        if (isDestroyed && (nowMs - destroyedAtMs >= delayMs)) {
             isDestroyed = false;
             health = maxHealth;
             solidObstacle = true;
@@ -317,6 +322,42 @@ struct RemotePlayerObstacle {
     ClothingType clothing = ClothingType::REGULAR;
 };
 
+// Spatial detection descriptor for accessible radar & inspection queries
+struct NearbyItemInfo {
+    std::string id;
+    std::string name;
+    std::string category; // "object", "npc", "structure", "travel"
+    float distance = 0.0f;
+    std::string clockDirection; // e.g. "ahead (12 o'clock)", "3 o'clock", "behind (6 o'clock)"
+    std::string details;
+    Vector3 position;
+};
+
+inline std::string calculate_clock_direction(float playerYaw, const Vector3& from, const Vector3& to) {
+    float dx = to.x - from.x;
+    float dy = to.y - from.y;
+    if (std::sqrt(dx * dx + dy * dy) < 0.2f) {
+        return "at your feet";
+    }
+    float targetAngleDeg = std::atan2(dx, dy) * 180.0f / (float)M_PI;
+    if (targetAngleDeg < 0.0f) targetAngleDeg += 360.0f;
+
+    float relAngle = std::fmod((targetAngleDeg - playerYaw + 540.0f), 360.0f) - 180.0f;
+
+    if (relAngle > -15.0f && relAngle <= 15.0f) return "ahead (12 o'clock)";
+    if (relAngle > 15.0f && relAngle <= 45.0f) return "1 o'clock";
+    if (relAngle > 45.0f && relAngle <= 75.0f) return "2 o'clock";
+    if (relAngle > 75.0f && relAngle <= 105.0f) return "3 o'clock (right)";
+    if (relAngle > 105.0f && relAngle <= 135.0f) return "4 o'clock";
+    if (relAngle > 135.0f && relAngle <= 165.0f) return "5 o'clock";
+    if (relAngle > 165.0f || relAngle <= -165.0f) return "behind (6 o'clock)";
+    if (relAngle > -165.0f && relAngle <= -135.0f) return "7 o'clock";
+    if (relAngle > -135.0f && relAngle <= -105.0f) return "8 o'clock";
+    if (relAngle > -105.0f && relAngle <= -75.0f) return "9 o'clock (left)";
+    if (relAngle > -75.0f && relAngle <= -45.0f) return "10 o'clock";
+    return "11 o'clock";
+}
+
 // 3D Jump Controller with accessory multiplier hooks
 struct JumpController {
     bool isJumping = false;
@@ -399,6 +440,7 @@ struct WorldMap {
         const Vector3& origin,
         float yawDeg,
         int damage,
+        std::string& out_id,
         std::string& out_name,
         SurfaceType& out_mat,
         bool& out_destroyed,
@@ -428,6 +470,7 @@ struct WorldMap {
         if (hitIndex >= 0) {
             WorldObject& obj = objects[hitIndex];
             obj.take_damage(damage, nowMs);
+            out_id = obj.id;
             out_name = obj.name;
             out_mat = obj.material;
             out_destroyed = obj.isDestroyed;
@@ -437,6 +480,98 @@ struct WorldMap {
         }
 
         return false;
+    }
+
+    std::vector<NearbyItemInfo> get_nearby_objects(const Vector3& origin, float yawDeg, float maxRange = 25.0f) const {
+        std::vector<NearbyItemInfo> list;
+        for (const auto& obj : objects) {
+            Vector3 center = obj.get_center();
+            float dist = origin.distance_xy(center);
+            if (dist <= maxRange) {
+                NearbyItemInfo item;
+                item.id = obj.id;
+                item.name = obj.name;
+                item.category = "object";
+                item.distance = dist;
+                item.clockDirection = calculate_clock_direction(yawDeg, origin, center);
+                item.position = center;
+                if (obj.isDestroyed) {
+                    item.details = surface_to_string(obj.material) + " (Destroyed)";
+                } else {
+                    item.details = surface_to_string(obj.material) + " (" + std::to_string(obj.health) + "/" + std::to_string(obj.maxHealth) + " HP)";
+                }
+                list.push_back(item);
+            }
+        }
+        std::sort(list.begin(), list.end(), [](const NearbyItemInfo& a, const NearbyItemInfo& b) {
+            return a.distance < b.distance;
+        });
+        return list;
+    }
+
+    std::vector<NearbyItemInfo> get_nearby_npcs(const Vector3& origin, float yawDeg, const std::vector<ActiveNPC>& npcs, float maxRange = 25.0f) const {
+        std::vector<NearbyItemInfo> list;
+        for (const auto& n : npcs) {
+            float dist = origin.distance_xy(n.position);
+            if (dist <= maxRange) {
+                NearbyItemInfo item;
+                item.id = n.id;
+                item.name = n.name;
+                item.category = "npc";
+                item.distance = dist;
+                item.clockDirection = calculate_clock_direction(yawDeg, origin, n.position);
+                item.position = n.position;
+                item.details = n.clothing + " clothing";
+                if (!n.dialogue.empty()) {
+                    std::string d = n.dialogue;
+                    if (d.length() > 32) d = d.substr(0, 32) + "...";
+                    item.details += " - \"" + d + "\"";
+                }
+                list.push_back(item);
+            }
+        }
+        std::sort(list.begin(), list.end(), [](const NearbyItemInfo& a, const NearbyItemInfo& b) {
+            return a.distance < b.distance;
+        });
+        return list;
+    }
+
+    std::vector<NearbyItemInfo> get_nearby_structures(const Vector3& origin, float yawDeg, float maxRange = 60.0f) const {
+        std::vector<NearbyItemInfo> list;
+        for (const auto& tp : travel_points) {
+            Vector3 pos(tp.trigger_x, tp.trigger_y, 0.0f);
+            float dist = origin.distance_xy(pos);
+            if (dist <= maxRange) {
+                NearbyItemInfo item;
+                item.id = tp.id;
+                item.name = tp.name;
+                item.category = "travel";
+                item.distance = dist;
+                item.clockDirection = calculate_clock_direction(yawDeg, origin, pos);
+                item.position = pos;
+                item.details = "Gateway to " + tp.target_map;
+                list.push_back(item);
+            }
+        }
+        for (const auto& r : regions) {
+            Vector3 center((r.min_x + r.max_x) * 0.5f, (r.min_y + r.max_y) * 0.5f, 0.0f);
+            float dist = origin.distance_xy(center);
+            if (dist <= maxRange) {
+                NearbyItemInfo item;
+                item.id = r.id;
+                item.name = r.name;
+                item.category = "structure";
+                item.distance = dist;
+                item.clockDirection = calculate_clock_direction(yawDeg, origin, center);
+                item.position = center;
+                item.details = r.isOutside ? "Outdoor Area" : "Indoor Structure";
+                list.push_back(item);
+            }
+        }
+        std::sort(list.begin(), list.end(), [](const NearbyItemInfo& a, const NearbyItemInfo& b) {
+            return a.distance < b.distance;
+        });
+        return list;
     }
 
     bool update_regenerations(unsigned long long nowMs, std::vector<std::string>& out_respawned_names) {
@@ -677,13 +812,24 @@ struct WorldMap {
 
             int nextObjId = 0;
             auto add_box_object = [&](
+                const std::string& rawId,
                 const std::string& name,
                 float x1, float x2, float y1, float y2, float h,
                 SurfaceType mat, int hp, bool canDestroy, bool regen, int regenSec,
-                const std::string& soundAsset = "", float soundVol = 0.8f, float sndRadius = 25.0f
+                const std::string& soundAsset = "", float soundVol = 0.8f, float sndRadius = 25.0f,
+                const std::string& prefix = "obj"
             ) {
                 WorldObject obj;
-                obj.id = nextObjId++;
+                obj.idIndex = nextObjId++;
+                if (!rawId.empty()) {
+                    obj.id = rawId;
+                } else {
+                    std::string cleanName;
+                    for (char c : name) {
+                        cleanName += (isalnum(c) ? (char)tolower(c) : '_');
+                    }
+                    obj.id = prefix + "_" + cleanName + "_" + std::to_string(int(x1)) + "_" + std::to_string(int(y1));
+                }
                 obj.name = name;
                 obj.min_x = x1; obj.max_x = x2;
                 obj.min_y = y1; obj.max_y = y2;
@@ -701,10 +847,10 @@ struct WorldMap {
                 objects.push_back(obj);
 
                 auto props = get_material_acoustics(mat);
-                walls.push_back({x1, y1, x2, y1, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x2, y1, x2, y2, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x2, y2, x1, y2, name, mat, props.reflectivity, false, obj.id});
-                walls.push_back({x1, y2, x1, y1, name, mat, props.reflectivity, false, obj.id});
+                walls.push_back({x1, y1, x2, y1, name, mat, props.reflectivity, false, obj.idIndex});
+                walls.push_back({x2, y1, x2, y2, name, mat, props.reflectivity, false, obj.idIndex});
+                walls.push_back({x2, y2, x1, y2, name, mat, props.reflectivity, false, obj.idIndex});
+                walls.push_back({x1, y2, x1, y1, name, mat, props.reflectivity, false, obj.idIndex});
             };
 
             // Load travel points (gateways to child maps/structures)
@@ -773,6 +919,7 @@ struct WorldMap {
 
                     if (s.contains("interior_objects") && s["interior_objects"].is_array()) {
                         for (const auto& o : s["interior_objects"]) {
+                            std::string oid = o.value("id", "");
                             std::string oname = o.value("name", "Object");
                             float x1 = o.value("min_x", 0.0f), x2 = o.value("max_x", 0.0f);
                             float y1 = o.value("min_y", o.value("min_z", 0.0f));
@@ -786,7 +933,7 @@ struct WorldMap {
                             std::string snd = o.value("sound_asset", "");
                             float svol = o.value("sound_volume", 0.8f);
                             float srad = o.value("sound_radius", 25.0f);
-                            add_box_object(oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad);
+                            add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "struct");
                         }
                     }
                 }
@@ -795,6 +942,7 @@ struct WorldMap {
             // Load outdoor field objects
             if (j.contains("field_objects") && j["field_objects"].is_array()) {
                 for (const auto& o : j["field_objects"]) {
+                    std::string oid = o.value("id", "");
                     std::string oname = o.value("name", "Object");
                     float x1 = o.value("min_x", 0.0f), x2 = o.value("max_x", 0.0f);
                     float y1 = o.value("min_y", o.value("min_z", 0.0f));
@@ -808,13 +956,14 @@ struct WorldMap {
                     std::string snd = o.value("sound_asset", "");
                     float svol = o.value("sound_volume", 0.8f);
                     float srad = o.value("sound_radius", 25.0f);
-                    add_box_object(oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad);
+                    add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "field");
                 }
             }
 
             // Load direct/generic objects list
             if (j.contains("objects") && j["objects"].is_array()) {
                 for (const auto& o : j["objects"]) {
+                    std::string oid = o.value("id", "");
                     std::string oname = o.value("name", "Object");
                     float x1 = o.value("min_x", 0.0f), x2 = o.value("max_x", 0.0f);
                     float y1 = o.value("min_y", o.value("min_z", 0.0f));
@@ -828,7 +977,7 @@ struct WorldMap {
                     std::string snd = o.value("sound_asset", "");
                     float svol = o.value("sound_volume", 0.8f);
                     float srad = o.value("sound_radius", 25.0f);
-                    add_box_object(oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad);
+                    add_box_object(oid, oname, x1, x2, y1, y2, h, mat, hp, canDestroy, regen, regenSec, snd, svol, srad, "obj");
                 }
             }
 
@@ -883,7 +1032,8 @@ inline WorldMap create_realistic_lounge() {
     int nextObjId = 0;
     auto add_box_object = [&](const std::string& name, float x1, float x2, float y1, float y2, float h, SurfaceType mat, int hp = 100, bool canDestroy = true, int regenSec = 60) {
         WorldObject obj;
-        obj.id = nextObjId++;
+        obj.idIndex = nextObjId++;
+        obj.id = "lounge_obj_" + std::to_string(obj.idIndex);
         obj.name = name;
         obj.min_x = x1; obj.max_x = x2;
         obj.min_y = y1; obj.max_y = y2;
@@ -898,10 +1048,10 @@ inline WorldMap create_realistic_lounge() {
         m.objects.push_back(obj);
 
         auto props = get_material_acoustics(mat);
-        m.walls.push_back({x1, y1, x2, y1, name, mat, props.reflectivity, false, obj.id});
-        m.walls.push_back({x2, y1, x2, y2, name, mat, props.reflectivity, false, obj.id});
-        m.walls.push_back({x2, y2, x1, y2, name, mat, props.reflectivity, false, obj.id});
-        m.walls.push_back({x1, y2, x1, y1, name, mat, props.reflectivity, false, obj.id});
+        m.walls.push_back({x1, y1, x2, y1, name, mat, props.reflectivity, false, obj.idIndex});
+        m.walls.push_back({x2, y1, x2, y2, name, mat, props.reflectivity, false, obj.idIndex});
+        m.walls.push_back({x2, y2, x1, y2, name, mat, props.reflectivity, false, obj.idIndex});
+        m.walls.push_back({x1, y2, x1, y1, name, mat, props.reflectivity, false, obj.idIndex});
     };
 
     // Lounge furniture

@@ -139,11 +139,107 @@ def test_npc_spawners_and_wander():
     print("  -> NPC simulation PASSED.")
 
 
+def test_server_boot_persistence_and_multi_maps():
+    print("\n[TEST 5] Testing Server Boot Preloading & Multi-Map Persistence...")
+    from server.server import FakeVRServer
+    server = FakeVRServer(port=7799)
+    
+    # Verify all maps were preloaded into room states at boot
+    assert "lounge" in server.room_mgr.room_states
+    assert "city_capital" in server.room_mgr.room_states
+    assert "shop_blacksmith" in server.room_mgr.room_states
+    
+    lounge = server.room_mgr.room_states["lounge"]
+    capital = server.room_mgr.room_states["city_capital"]
+    blacksmith = server.room_mgr.room_states["shop_blacksmith"]
+    
+    # Check objects preloaded
+    assert len(lounge.objects) > 0, "Lounge objects should be preloaded"
+    assert len(capital.objects) > 0, "Capital city objects should be preloaded"
+    assert len(blacksmith.objects) > 0, "Blacksmith workshop objects should be preloaded"
+    
+    # Check spawners & NPCs preloaded
+    assert len(lounge.npcs) >= 2, f"Lounge NPCs should be preloaded, got {len(lounge.npcs)}"
+    assert len(capital.npcs) >= 1, "Capital guard should be preloaded"
+    assert len(blacksmith.npcs) >= 1, "Blacksmith NPC should be preloaded"
+    
+    # Verify unique IDs for every object across all rooms
+    for r_name, r_st in [("lounge", lounge), ("capital", capital), ("blacksmith", blacksmith)]:
+        ids = list(r_st.objects.keys())
+        assert len(ids) == len(set(ids)), f"Duplicate object IDs detected in room '{r_name}'!"
+        for obj_id, obj in r_st.objects.items():
+            assert isinstance(obj.id, str) and len(obj.id) > 0
+            assert obj.id == obj_id
+            
+    print("  -> Multi-map boot preloading and unique string IDs PASSED.")
+
+
+def test_unique_id_damage_and_no_duplicate_respawn():
+    print("\n[TEST 6] Testing Precise String ID Damage & Anti-Duplicate Respawn...")
+    room = RoomState("test_arena")
+    arena_map = {
+        "title": "Arena",
+        "objects": [
+            {
+                "id": "crate_alpha",
+                "name": "Supply Crate",
+                "material": "wood",
+                "min_x": 1.0, "max_x": 2.0, "min_y": 1.0, "max_y": 2.0,
+                "health": 50,
+                "destructible": True,
+                "regeneration": True,
+                "respawn_time_seconds": 3
+            },
+            {
+                "id": "crate_beta",
+                "name": "Supply Crate", # Identical name, different ID!
+                "material": "wood",
+                "min_x": 5.0, "max_x": 6.0, "min_y": 5.0, "max_y": 6.0,
+                "health": 50,
+                "destructible": True,
+                "regeneration": False, # Never respawns!
+                "respawn_time_seconds": 3
+            }
+        ]
+    }
+    room.populate_from_map_dict(arena_map)
+    assert "crate_alpha" in room.objects and "crate_beta" in room.objects
+    
+    now = time.time()
+    # Damage crate_beta specifically by ID
+    obj_b, destroyed_b = room.damage_object("crate_beta", 50, now)
+    assert destroyed_b and obj_b.id == "crate_beta" and obj_b.is_destroyed
+    # Verify crate_alpha was untouched!
+    obj_a = room.objects["crate_alpha"]
+    assert not obj_a.is_destroyed and obj_a.health == 50
+    
+    # Test respawns: crate_beta has regeneration=False, so must never respawn!
+    respawned = room.update_respawns(now + 10.0)
+    assert len(respawned) == 0, "crate_beta must never respawn because regeneration=False!"
+    assert obj_b.is_destroyed
+    
+    # Now destroy crate_alpha
+    obj_a_hit, destroyed_a = room.damage_object("crate_alpha", 50, now)
+    assert destroyed_a and obj_a_hit.is_destroyed
+    
+    # Before 3s: 0 respawned
+    assert len(room.update_respawns(now + 1.0)) == 0
+    # After 3.5s: exactly crate_alpha respawns
+    respawned_after = room.update_respawns(now + 3.5)
+    assert len(respawned_after) == 1 and respawned_after[0].id == "crate_alpha"
+    assert not respawned_after[0].is_destroyed
+    # crate_beta still destroyed
+    assert obj_b.is_destroyed
+    print("  -> Precise string ID targeting and anti-duplicate respawn PASSED.")
+
+
 if __name__ == "__main__":
     test_vector3_and_coordinates()
     test_server_authoritative_objects_and_respawn()
     test_travel_points_and_hierarchical_maps()
     test_npc_spawners_and_wander()
+    test_server_boot_persistence_and_multi_maps()
+    test_unique_id_damage_and_no_duplicate_respawn()
     print("\n=======================================================")
     print("ALL CORE ARCHITECTURAL & UNIT TESTS PASSED SUCCESSFULLY!")
     print("=======================================================")

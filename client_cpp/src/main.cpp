@@ -180,19 +180,22 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 "  Left / Right      - Turn 30 degrees",
                 "  Ctrl + Space      - Jump (3 tiles elevation arc)",
                 "  Spacebar          - Attack object in front (Server Authoritative)",
+                "  O / Shift+O       - Look around at Objects (Shift+O for accessible list)",
+                "  N / Shift+N       - Look around at NPCs (Shift+N for accessible list)",
+                "  J / Shift+J       - Look around at Structures & Portals (Shift+J for list)",
                 "  B                 - Building Tool (Mark Point A and Point B to erect walls)",
                 "  E                 - Interact with nearby NPC or structure",
                 "  U                 - Active 16-Ray Echolocation Pulse",
                 "  T                 - Cycle outfit (Regular Clothes, Naked, Armor)",
-                "  P                 - Nearby Players Radar",
+                "  P                 - Radar (Nearby Players & NPCs)",
                 "  C                 - Status & 3D Coordinates (X, Y, Z)",
                 "  Escape / Alt+F4   - Exit",
             };
 
-            int y = 95;
+            int y = 90;
             for (const auto& line : helpText) {
                 TextOutA(hdc, 24, y, line, (int)strlen(line));
-                y += 22;
+                y += 20;
             }
 
             SelectObject(hdc, hFontOld);
@@ -206,6 +209,180 @@ LRESULT CALLBACK MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         }
     }
     return DefWindowProcA(hWnd, msg, wParam, lParam);
+}
+
+// Window procedure and data for Accessible Modal List Dialog
+struct ListDialogData {
+    ScreenReader* sr = nullptr;
+    std::string title;
+    std::vector<NearbyItemInfo> items;
+    HWND hListBox = NULL;
+    bool done = false;
+};
+
+static WNDPROC g_OriginalListBoxProc = NULL;
+static ListDialogData* g_ActiveListDialogData = NULL;
+
+LRESULT CALLBACK AccessibleListBoxSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_KEYDOWN) {
+        if (wParam == VK_ESCAPE || wParam == VK_RETURN) {
+            if (g_ActiveListDialogData) {
+                g_ActiveListDialogData->done = true;
+                if (g_ActiveListDialogData->sr) {
+                    g_ActiveListDialogData->sr->speak("Closed.");
+                }
+            }
+            HWND hParent = GetParent(hWnd);
+            if (hParent) DestroyWindow(hParent);
+            return 0;
+        }
+    }
+    return CallWindowProcA(g_OriginalListBoxProc, hWnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK AccessibleListWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CREATE: {
+            CREATESTRUCTA* cs = (CREATESTRUCTA*)lParam;
+            ListDialogData* data = (ListDialogData*)cs->lpCreateParams;
+            SetWindowLongPtrA(hWnd, GWLP_USERDATA, (LONG_PTR)data);
+            g_ActiveListDialogData = data;
+
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+            HWND hList = CreateWindowExA(
+                WS_EX_CLIENTEDGE,
+                "LISTBOX",
+                "",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT,
+                12, 12, rc.right - 24, rc.bottom - 24,
+                hWnd,
+                (HMENU)1001,
+                cs->hInstance,
+                NULL
+            );
+            data->hListBox = hList;
+
+            HFONT hFont = CreateFontA(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
+            SendMessageA(hList, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            for (const auto& item : data->items) {
+                int distTiles = (int)std::round(item.distance);
+                std::string line = std::to_string(distTiles) + (distTiles == 1 ? " tile: " : " tiles: ") + 
+                                   item.name + " (" + item.clockDirection + ") - " + item.details;
+                SendMessageA(hList, LB_ADDSTRING, 0, (LPARAM)line.c_str());
+            }
+
+            if (!data->items.empty()) {
+                SendMessageA(hList, LB_SETCURSEL, 0, 0);
+            }
+
+            // Subclass list box so Escape and Enter close cleanly
+            g_OriginalListBoxProc = (WNDPROC)SetWindowLongPtrA(hList, GWLP_WNDPROC, (LONG_PTR)AccessibleListBoxSubclassProc);
+            SetFocus(hList);
+            return 0;
+        }
+        case WM_COMMAND: {
+            if (LOWORD(wParam) == 1001 && HIWORD(wParam) == LBN_SELCHANGE) {
+                ListDialogData* data = (ListDialogData*)GetWindowLongPtrA(hWnd, GWLP_USERDATA);
+                if (data && data->hListBox && data->sr) {
+                    int sel = (int)SendMessageA(data->hListBox, LB_GETCURSEL, 0, 0);
+                    if (sel >= 0 && sel < (int)data->items.size()) {
+                        const auto& item = data->items[sel];
+                        int distTiles = (int)std::round(item.distance);
+                        std::string spoken = item.name + ", " + std::to_string(distTiles) + 
+                                             (distTiles == 1 ? " tile " : " tiles ") + 
+                                             item.clockDirection + ". " + item.details;
+                        data->sr->speak(spoken);
+                    }
+                }
+            }
+            return 0;
+        }
+        case WM_CLOSE: {
+            ListDialogData* data = (ListDialogData*)GetWindowLongPtrA(hWnd, GWLP_USERDATA);
+            if (data) {
+                data->done = true;
+                if (data->sr) data->sr->speak("Closed.");
+            }
+            DestroyWindow(hWnd);
+            return 0;
+        }
+        case WM_DESTROY: {
+            ListDialogData* data = (ListDialogData*)GetWindowLongPtrA(hWnd, GWLP_USERDATA);
+            if (data) data->done = true;
+            g_ActiveListDialogData = nullptr;
+            return 0;
+        }
+    }
+    return DefWindowProcA(hWnd, msg, wParam, lParam);
+}
+
+void ShowAccessibleListDialog(HWND parentHwnd, ScreenReader& sr, const std::string& title, const std::vector<NearbyItemInfo>& items) {
+    if (items.empty()) {
+        sr.speak("No items found nearby.");
+        return;
+    }
+
+    HINSTANCE hInst = GetModuleHandleA(NULL);
+    const char* DLG_CLASS = "FakeVR_AccessibleList_Window";
+
+    static bool classRegistered = false;
+    if (!classRegistered) {
+        WNDCLASSA wc{};
+        wc.lpfnWndProc = AccessibleListWndProc;
+        wc.hInstance = hInst;
+        wc.lpszClassName = DLG_CLASS;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        RegisterClassA(&wc);
+        classRegistered = true;
+    }
+
+    ListDialogData data;
+    data.sr = &sr;
+    data.title = title;
+    data.items = items;
+    data.done = false;
+
+    RECT rcParent;
+    GetWindowRect(parentHwnd, &rcParent);
+    int width = 580;
+    int height = 420;
+    int x = rcParent.left + ((rcParent.right - rcParent.left) - width) / 2;
+    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - height) / 2;
+
+    HWND hWndDlg = CreateWindowExA(
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        DLG_CLASS,
+        title.c_str(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        x, y, width, height,
+        parentHwnd,
+        NULL,
+        hInst,
+        &data
+    );
+
+    if (!hWndDlg) return;
+
+    int firstDist = (int)std::round(items[0].distance);
+    std::string intro = title + ". " + std::to_string(items.size()) + (items.size() == 1 ? " item. " : " items. ") +
+                        "First: " + items[0].name + ", " + std::to_string(firstDist) + (firstDist == 1 ? " tile " : " tiles ") + 
+                        items[0].clockDirection + ". Use Up and Down arrows to explore. Escape to close.";
+    sr.speak(intro);
+
+    MSG msg;
+    while (!data.done && GetMessageA(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+    }
+
+    if (IsWindow(hWndDlg)) {
+        DestroyWindow(hWndDlg);
+    }
+
+    SetFocus(parentHwnd);
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
@@ -297,6 +474,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     bool prevKeySpace = false;
     bool prevKeyB = false;
     bool prevKeyE = false;
+    bool prevKeyO = false;
+    bool prevKeyN = false;
+    bool prevKeyJ = false;
     bool prevKeyReturn = false;
     bool prevKeyT = false;
     bool prevKeyY = false;
@@ -367,7 +547,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             ObjectStateEvent objEv;
             while (net.pollObjectState(objEv)) {
                 for (auto& o : world.objects) {
-                    if (o.id == objEv.objectId || o.name == objEv.name) {
+                    bool match = false;
+                    if (!objEv.objectId.empty() && o.id == objEv.objectId) match = true;
+                    else if (objEv.legacyId >= 0 && o.idIndex == objEv.legacyId) match = true;
+                    else if (o.name == objEv.name) match = true;
+
+                    if (match) {
                         o.health = objEv.health;
                         o.maxHealth = objEv.maxHealth;
                         o.isDestroyed = objEv.isDestroyed;
@@ -401,12 +586,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                         audio.setListener(playerPos, playerYaw);
                     }
 
-                    try {
-                        std::ofstream fOut("assets/maps/default_world.json");
-                        if (fOut.is_open()) {
-                            fOut << newMapJson.dump(2);
-                        }
-                    } catch (...) {}
+                    if (newMapTitle.find("Lounge") != std::string::npos || newMapTitle.find("default_world") != std::string::npos) {
+                        try {
+                            std::ofstream fOut("assets/maps/default_world.json");
+                            if (fOut.is_open()) {
+                                fOut << newMapJson.dump(2);
+                            }
+                        } catch (...) {}
+                    }
 
                     sr.speak("World map updated live: " + newMapTitle + ".");
                 }
@@ -468,19 +655,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                     }
                 } else {
                     // ATTACK OBJECT IN FRONT
-                    std::string hitName;
+                    std::string hitId, hitName;
                     SurfaceType hitMat = SurfaceType::WOOD;
                     bool destroyed = false;
                     int hpLeft = 0;
                     Vector3 impactPos;
 
                     int bareHandsDamage = 25;
-                    if (world.attack_object_in_front(playerPos, playerYaw, bareHandsDamage, hitName, hitMat, destroyed, hpLeft, impactPos, (unsigned long long)now)) {
+                    if (world.attack_object_in_front(playerPos, playerYaw, bareHandsDamage, hitId, hitName, hitMat, destroyed, hpLeft, impactPos, (unsigned long long)now)) {
                         audio.triggerAttackImpact(impactPos, hitMat, destroyed);
                         audio.setMap(world);
 
                         if (isMultiplayer) {
-                            net.sendAttack(hitName, hitMat, bareHandsDamage, impactPos);
+                            net.sendAttack(hitId, hitName, hitMat, bareHandsDamage, impactPos);
                         }
 
                         if (destroyed) {
@@ -605,23 +792,95 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             }
             prevKeyY = keyY;
 
+            bool shiftPressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+
+            // Hotkey 'O': Look around at Objects (Shift+O for accessible list)
+            bool keyO = (GetAsyncKeyState('O') & 0x8000) != 0;
+            if (keyO && !prevKeyO) {
+                auto nearbyObjs = world.get_nearby_objects(playerPos, playerYaw, 25.0f);
+                if (shiftPressed) {
+                    ShowAccessibleListDialog(hWnd, sr, "Nearby Objects", nearbyObjs);
+                } else {
+                    if (nearbyObjs.empty()) {
+                        sr.speak("No objects nearby.");
+                    } else if (nearbyObjs.size() == 1) {
+                        int d = (int)std::round(nearbyObjs[0].distance);
+                        sr.speak(nearbyObjs[0].name + ", " + std::to_string(d) + (d == 1 ? " tile " : " tiles ") + nearbyObjs[0].clockDirection + ".");
+                    } else {
+                        int d = (int)std::round(nearbyObjs[0].distance);
+                        sr.speak("Found " + std::to_string(nearbyObjs.size()) + " objects. Nearest: " + nearbyObjs[0].name + " at " + std::to_string(d) + " tiles " + nearbyObjs[0].clockDirection + ". Press Shift O for list.");
+                    }
+                }
+            }
+            prevKeyO = keyO;
+
+            // Hotkey 'N': Look around at NPCs (Shift+N for accessible list)
+            bool keyN = (GetAsyncKeyState('N') & 0x8000) != 0;
+            if (keyN && !prevKeyN) {
+                auto nearbyNpcs = world.get_nearby_npcs(playerPos, playerYaw, net.getActiveNPCs(), 25.0f);
+                if (shiftPressed) {
+                    ShowAccessibleListDialog(hWnd, sr, "Nearby NPCs", nearbyNpcs);
+                } else {
+                    if (nearbyNpcs.empty()) {
+                        sr.speak("No NPCs nearby.");
+                    } else if (nearbyNpcs.size() == 1) {
+                        int d = (int)std::round(nearbyNpcs[0].distance);
+                        sr.speak(nearbyNpcs[0].name + ", " + std::to_string(d) + (d == 1 ? " tile " : " tiles ") + nearbyNpcs[0].clockDirection + ".");
+                    } else {
+                        int d = (int)std::round(nearbyNpcs[0].distance);
+                        sr.speak("Found " + std::to_string(nearbyNpcs.size()) + " NPCs. Nearest: " + nearbyNpcs[0].name + " at " + std::to_string(d) + " tiles " + nearbyNpcs[0].clockDirection + ". Press Shift N for list.");
+                    }
+                }
+            }
+            prevKeyN = keyN;
+
+            // Hotkey 'J': Look around at Structures & Portals (Shift+J for accessible list)
+            bool keyJ = (GetAsyncKeyState('J') & 0x8000) != 0;
+            if (keyJ && !prevKeyJ) {
+                auto nearbyStructs = world.get_nearby_structures(playerPos, playerYaw, 60.0f);
+                if (shiftPressed) {
+                    ShowAccessibleListDialog(hWnd, sr, "Nearby Structures & Portals", nearbyStructs);
+                } else {
+                    if (nearbyStructs.empty()) {
+                        sr.speak("No structures or gateways nearby.");
+                    } else if (nearbyStructs.size() == 1) {
+                        int d = (int)std::round(nearbyStructs[0].distance);
+                        sr.speak(nearbyStructs[0].name + ", " + std::to_string(d) + (d == 1 ? " tile " : " tiles ") + nearbyStructs[0].clockDirection + ".");
+                    } else {
+                        int d = (int)std::round(nearbyStructs[0].distance);
+                        sr.speak("Found " + std::to_string(nearbyStructs.size()) + " structures. Nearest: " + nearbyStructs[0].name + " at " + std::to_string(d) + " tiles " + nearbyStructs[0].clockDirection + ". Press Shift J for list.");
+                    }
+                }
+            }
+            prevKeyJ = keyJ;
+
+            // Hotkey 'P': Radar (Nearby Players & NPCs)
             bool keyP = (GetAsyncKeyState('P') & 0x8000) != 0;
             if (keyP && !prevKeyP) {
-                if (!isMultiplayer) {
-                    sr.speak("Offline mode. You are alone.");
+                std::string radar;
+                auto remotePlayers = isMultiplayer ? net.getPlayers() : std::vector<RemotePlayer>{};
+                auto activeNpcs = net.getActiveNPCs();
+
+                if (remotePlayers.empty() && activeNpcs.empty()) {
+                    sr.speak("No players or NPCs nearby.");
                 } else {
-                    auto remotePlayers = net.getPlayers();
-                    if (remotePlayers.empty()) {
-                        sr.speak("No other players nearby.");
-                    } else {
-                        std::string radar = std::to_string(remotePlayers.size()) + (remotePlayers.size() > 1 ? " players online: " : " player online: ");
+                    if (!remotePlayers.empty()) {
+                        radar += std::to_string(remotePlayers.size()) + (remotePlayers.size() > 1 ? " players: " : " player: ");
                         for (const auto& rp : remotePlayers) {
-                            float d = playerPos.distance_xy(rp.position);
-                            std::string uName = rp.username.empty() ? "Guest" : rp.username;
-                            radar += uName + " at " + std::to_string((int)std::round(d)) + " meters. ";
+                            int d = (int)std::round(playerPos.distance_xy(rp.position));
+                            std::string dir = calculate_clock_direction(playerYaw, playerPos, rp.position);
+                            radar += (rp.username.empty() ? "Player" : rp.username) + " at " + std::to_string(d) + " tiles " + dir + ". ";
                         }
-                        sr.speak(radar);
                     }
+                    if (!activeNpcs.empty()) {
+                        radar += std::to_string(activeNpcs.size()) + (activeNpcs.size() > 1 ? " NPCs: " : " NPC: ");
+                        for (const auto& npc : activeNpcs) {
+                            int d = (int)std::round(playerPos.distance_xy(npc.position));
+                            std::string dir = calculate_clock_direction(playerYaw, playerPos, npc.position);
+                            radar += npc.name + " at " + std::to_string(d) + " tiles " + dir + ". ";
+                        }
+                    }
+                    sr.speak(radar);
                 }
             }
             prevKeyP = keyP;
