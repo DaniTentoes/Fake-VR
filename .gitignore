@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.obj
+*.pdb
+*.ilk
+
+# Executables & SDK archives
+steam_audio_sdk/
+*.zip
+*.tar.gz
+
+# Environment & Temp logs
+.env
+.venv/
+env/
+venv/
+*.log
+run_tunnel.ps1

@@ -1,0 +1,5 @@
+{
+  "version": "1.0.0",
+  "download_url": "https://github.com/DaniTentoes/Fake-VR/releases/latest/download/FakeVR_Friend_Client.zip",
+  "changelog": "Initial release with 3D spatial acoustics, clothing foley, multiplayer sync, and destructible objects."
+}
