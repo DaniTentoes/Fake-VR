@@ -114,6 +114,16 @@
       "reflectivity": 0.6,
       "name": "Testing Wall",
       "is_doorway": false
+    },
+    {
+      "x1": 5.0,
+      "y1": 5.0,
+      "x2": 5.0,
+      "y2": 10.0,
+      "material": "wood",
+      "reflectivity": 0.6,
+      "name": "Testing Wall",
+      "is_doorway": false
     }
   ],
   "default_surface": "tile",
@@ -636,6 +646,46 @@
         "dialogue": "*The grey wolf pants softly, wagging its bushy tail, watching you with keen amber eyes.*",
         "script_name": "wolf_companion",
         "walk_interval": 3.2
+      }
+    },
+    {
+      "id": "spawner_ralaka",
+      "entity_type": "creature",
+      "x": -15.0,
+      "y": 15.0,
+      "z": 0.0,
+      "interval": 3.0,
+      "max_count": 1,
+      "wander_radius": 14.0,
+      "npc_config": {
+        "name": "ralaka",
+        "sound_asset": "footsteps/carpet_1.wav",
+        "foley_asset": "foley/armor/armor_1.wav",
+        "voice_sound": "auras/hum.wav",
+        "clothing": "armor",
+        "walk_interval": 2.8,
+        "dialogue": "*The grey wolf pants softly, wagging its bushy tail, watching you with keen amber eyes.*",
+        "script_name": "wolf_companion"
+      }
+    },
+    {
+      "id": "spawner_ralaka",
+      "entity_type": "creature",
+      "x": -15.0,
+      "y": 15.0,
+      "z": 0.0,
+      "interval": 3.0,
+      "max_count": 1,
+      "wander_radius": 14.0,
+      "npc_config": {
+        "name": "ralaka",
+        "sound_asset": "footsteps/carpet_1.wav",
+        "foley_asset": "foley/armor/armor_1.wav",
+        "voice_sound": "auras/hum.wav",
+        "clothing": "armor",
+        "walk_interval": 2.8,
+        "dialogue": "*The grey wolf pants softly, wagging its bushy tail, watching you with keen amber eyes.*",
+        "script_name": "wolf_companion"
       }
     }
   ]

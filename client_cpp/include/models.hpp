@@ -47,6 +47,10 @@ struct Vector3 {
         return std::sqrt(x * x + y * y + z * z);
     }
 
+    float magnitude() const {
+        return length();
+    }
+
     float length_horizontal() const {
         return std::sqrt(x * x + y * y);
     }
@@ -308,6 +312,7 @@ struct ActiveNPC {
     float wanderRadius = 5.0f;
     std::string soundAsset = "footsteps/wood_1.wav";
     std::string foleyAsset = "foley/regular/regular_1.wav";
+    std::string voiceSound = "auras/hum.wav";
     std::string clothing = "regular";
     std::string dialogue = "Hello there.";
     bool isMoving = false;
@@ -975,7 +980,7 @@ struct WorldMap {
                 // Materialize spawners into active local NPCs (offline/standalone fallback)
                 active_npcs.clear();
                 for (const auto& sp : spawners) {
-                    if (sp.entityType == "npc") {
+                    if (sp.entityType == "npc" || sp.entityType == "creature") {
                         ActiveNPC npc;
                         npc.id = sp.id;
                         npc.name = sp.npcName.empty() ? "Traveler" : sp.npcName;
@@ -985,6 +990,7 @@ struct WorldMap {
                         npc.wanderRadius = sp.wanderRadius;
                         npc.soundAsset = sp.soundAsset;
                         npc.foleyAsset = sp.foleyAsset;
+                        npc.voiceSound = sp.voiceSound;
                         npc.clothing = sp.clothing;
                         npc.dialogue = sp.dialogue;
                         active_npcs.push_back(npc);

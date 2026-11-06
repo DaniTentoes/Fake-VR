@@ -327,21 +327,25 @@ public:
         }
         if (!buf || buf->samples.empty()) return;
 
+        // Ensure non-zero offset if position coincides with listener so Steam Audio HRTF calculates a valid direction vector
+        Vector3 soundPos = pos;
+        if (std::abs(dx) < 0.2f && std::abs(dy) < 0.2f) {
+            float yawRad = listenerYaw * (float)M_PI / 180.0f;
+            soundPos.x += std::sin(yawRad) * 0.8f;
+            soundPos.y += std::cos(yawRad) * 0.8f;
+        }
+
         ActiveSound snd;
         snd.buffer = buf;
-        snd.position = pos;
-        snd.volume = (std::max)(0.05f, (std::min)(1.0f, volume));
+        snd.position = soundPos;
+        snd.volume = (std::max)(0.15f, (std::min)(1.0f, volume));
         snd.isLocalHead = false;
         snd.isFootstep = true;
-        snd.spatialChannel = 2; // Channel 2 dedicated to NPC sound
+
+        static int npcChannelIndex = 8;
+        snd.spatialChannel = (npcChannelIndex++ % 8) + 8; // Dedicated NPC channels 8-15
 
         std::lock_guard<std::mutex> lock(audioMutex);
-        // Replace previous active NPC sound on this channel to prevent audio piling up
-        for (auto& s : activeSounds) {
-            if (s.spatialChannel == 2) {
-                s.finished = true;
-            }
-        }
         if (activeSounds.size() < 24) {
             activeSounds.push_back(std::move(snd));
         }

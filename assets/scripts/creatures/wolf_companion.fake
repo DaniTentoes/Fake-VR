@@ -8,7 +8,7 @@ clothing: "naked"
 sound_asset: "footsteps/carpet_2.wav"
 voice_sound: "auras/hum.wav"
 wander_radius: 5.0
-walk_interval: 3.0
+walk_interval: 1.0
 flee_distance: 4.0
 
 on spawn:

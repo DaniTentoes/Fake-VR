@@ -150,38 +150,52 @@ class SoundBank:
                 return np.zeros(int(self.target_sample_rate * 0.1), dtype=np.float32)
 
     def load_all(self) -> None:
-        """Preloads all sounds across categories and indexes them case-insensitively."""
-        categories = ["footsteps", "echolocation", "auras", "environment", "ui"]
+        """Preloads all sounds across all asset subdirectories and indexes them case-insensitively."""
         loaded_count = 0
 
         for base_dir in self.search_dirs:
             if not os.path.exists(base_dir):
                 continue
 
-            for cat in categories:
-                cat_dir = os.path.join(base_dir, cat)
-                if not os.path.exists(cat_dir):
-                    continue
-
-                for f in os.listdir(cat_dir):
+            for root, _, files in os.walk(base_dir):
+                for f in files:
                     if f.lower().endswith(".wav"):
-                        key = f"{cat}/{f}".lower().replace("\\", "/")
-                        if key not in self._cache:
-                            full_path = os.path.join(cat_dir, f)
+                        full_path = os.path.join(root, f)
+                        rel_path = os.path.relpath(full_path, base_dir).lower().replace("\\", "/")
+                        if rel_path not in self._cache:
                             buf = self._load_wav(full_path)
-                            self._cache[key] = buf
+                            self._cache[rel_path] = buf
+                            if rel_path.endswith(".wav"):
+                                no_ext = rel_path[:-4]
+                                if no_ext not in self._cache:
+                                    self._cache[no_ext] = buf
                             loaded_count += 1
                             peak = np.max(np.abs(buf)) if len(buf) > 0 else 0.0
                             if peak > 0.01:
-                                print(f"[SoundBank]: Loaded audio '{key}' ({len(buf)/self.target_sample_rate:.2f}s, peak: {peak:.2f})")
+                                print(f"[SoundBank]: Loaded audio '{rel_path}' ({len(buf)/self.target_sample_rate:.2f}s, peak: {peak:.2f})")
 
         print(f"[SoundBank]: Indexed {len(self._cache)} sound assets.")
 
     def get(self, key: str) -> np.ndarray:
-        """Retrieves an audio buffer by relative key (case-insensitive)."""
-        norm_key = key.lower().replace("\\", "/")
+        """Retrieves an audio buffer by relative key (case-insensitive and tolerant of prefixes/extensions)."""
+        norm_key = key.lower().replace("\\", "/").strip().lstrip("/")
+        if norm_key.startswith("assets/sounds/"):
+            norm_key = norm_key[len("assets/sounds/"):]
+        elif norm_key.startswith("sounds/"):
+            norm_key = norm_key[len("sounds/"):]
+
         if norm_key in self._cache:
             return self._cache[norm_key]
+        if norm_key.endswith(".wav") and norm_key[:-4] in self._cache:
+            return self._cache[norm_key[:-4]]
+        if not norm_key.endswith(".wav") and (norm_key + ".wav") in self._cache:
+            return self._cache[norm_key + ".wav"]
+
+        # Also check bare filename in cache
+        base_name = os.path.basename(norm_key)
+        for k, buf in self._cache.items():
+            if k == base_name or (base_name.endswith(".wav") and k == base_name[:-4]) or ((k + ".wav") == base_name):
+                return buf
 
         # On-demand lookup if not cached during startup
         resolved = self._resolve_file_path(key)
@@ -189,6 +203,11 @@ class SoundBank:
             buf = self._load_wav(resolved)
             self._cache[norm_key] = buf
             return buf
+
+        # Fallback to wood_1.wav if available instead of dead silence
+        for fb in ("footsteps/wood_1.wav", "wood_1.wav", "footsteps/wood.wav"):
+            if fb in self._cache:
+                return self._cache[fb]
 
         # Fallback 0.1s silence
         return np.zeros(int(self.target_sample_rate * 0.1), dtype=np.float32)

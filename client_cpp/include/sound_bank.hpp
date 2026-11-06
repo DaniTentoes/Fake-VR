@@ -33,11 +33,11 @@ inline std::string resolve_asset_path(const std::string& relPath) {
 
     // Check parent directory (if running from bin/)
     std::string exeDir = get_executable_dir();
-    fs::path p1 = fs::path(exeDir) / relPath;
-    if (fs::exists(p1)) return p1.string();
-
     fs::path p2 = fs::path(exeDir) / ".." / relPath;
     if (fs::exists(p2)) return p2.lexically_normal().string();
+
+    fs::path p1 = fs::path(exeDir) / relPath;
+    if (fs::exists(p1)) return p1.string();
 
     return relPath;
 }
@@ -46,10 +46,10 @@ class SoundBank {
 public:
     SoundBank(const std::string& assetRoot = "assets/sounds") {
         std::vector<std::string> candidates = {
-            assetRoot,
-            "../" + assetRoot,
+            (fs::path(get_executable_dir()) / ".." / assetRoot).lexically_normal().string(),
             (fs::path(get_executable_dir()) / assetRoot).string(),
-            (fs::path(get_executable_dir()) / ".." / assetRoot).lexically_normal().string()
+            assetRoot,
+            "../" + assetRoot
         };
 
         bool loaded = false;
@@ -67,22 +67,72 @@ public:
         }
     }
 
-    const AudioBuffer* get(const std::string& key) const {
+    const AudioBuffer* get(const std::string& key) {
+        if (key.empty()) return nullptr;
+
         std::string lk = toLower(key);
+        // Strip common prefixes
+        if (lk.rfind("assets/sounds/", 0) == 0) {
+            lk = lk.substr(14);
+        } else if (lk.rfind("assets/", 0) == 0) {
+            lk = lk.substr(7);
+        }
+
+        // 1. Direct cache lookup
         auto it = cache.find(lk);
         if (it != cache.end()) {
             return &it->second;
         }
-        // Also check if key matches filename directly
+
+        // 2. Try with .wav extension if omitted
+        if (lk.size() < 4 || lk.substr(lk.size() - 4) != ".wav") {
+            auto itExt = cache.find(lk + ".wav");
+            if (itExt != cache.end()) {
+                return &itExt->second;
+            }
+        }
+
+        // 3. Basename lookup (e.g. "carpet_1.wav" or "carpet_1")
+        std::string baseName = lk;
+        size_t lastSlash = baseName.find_last_of('/');
+        if (lastSlash != std::string::npos) {
+            baseName = baseName.substr(lastSlash + 1);
+        }
         for (const auto& kv : cache) {
-            if (kv.first.find(lk) != std::string::npos || lk.find(kv.first) != std::string::npos) {
+            std::string kBase = kv.first;
+            size_t kSlash = kBase.find_last_of('/');
+            if (kSlash != std::string::npos) {
+                kBase = kBase.substr(kSlash + 1);
+            }
+            if (kBase == baseName || (baseName.size() >= 3 && kBase.find(baseName) != std::string::npos)) {
                 return &kv.second;
             }
         }
+
+        // 4. On-demand dynamic disk load if not previously cached
+        std::string resolved = resolve_asset_path("assets/sounds/" + lk);
+        if (!fs::exists(resolved)) {
+            resolved = resolve_asset_path(lk);
+        }
+        if (fs::exists(resolved) && !fs::is_directory(resolved)) {
+            AudioBuffer buf;
+            if (decodeWav(resolved, buf)) {
+                cache[lk] = std::move(buf);
+                std::cout << "[SoundBank]: Dynamically loaded asset: " << lk << " (" << cache[lk].samples.size() << " samples)\n";
+                return &cache[lk];
+            }
+        }
+
+        // 5. Fallback to default footstep so sound NEVER fails to play
+        auto itFallback = cache.find("footsteps/wood_1.wav");
+        if (itFallback != cache.end()) {
+            return &itFallback->second;
+        }
+
         return nullptr;
     }
 
-    const AudioBuffer* getFootstep(SurfaceType surface) const {
+    const AudioBuffer* getFootstep(SurfaceType surface) {
         std::string base = "wood";
         switch (surface) {
             case SurfaceType::WOOD: base = "wood"; break;
@@ -114,7 +164,7 @@ public:
         return get("footsteps/" + base + ".wav");
     }
 
-    const AudioBuffer* getFoley(ClothingType clothes) const {
+    const AudioBuffer* getFoley(ClothingType clothes) {
         std::string folder = "regular";
         std::string prefix = "regular";
         switch (clothes) {

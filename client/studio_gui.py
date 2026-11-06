@@ -29,6 +29,36 @@ AURA_TYPES = ["none", "vinyl", "chime", "hum", "silk"]
 CLOTHING_TYPES = ["regular", "naked", "armor"]
 
 
+def resolve_sound_file(path_str: str) -> str:
+    """Finds a matching sound file under ASSETS_DIR flexibly and case-insensitively."""
+    if not path_str:
+        return ""
+    rel = path_str.replace("\\", "/").strip().lstrip("/")
+    if rel.lower().startswith("assets/sounds/"):
+        rel = rel[len("assets/sounds/"):]
+    elif rel.lower().startswith("sounds/"):
+        rel = rel[len("sounds/"):]
+
+    # Direct match under ASSETS_DIR
+    cand = os.path.join(ASSETS_DIR, rel)
+    if os.path.isfile(cand):
+        return cand
+    if not cand.lower().endswith(".wav") and os.path.isfile(cand + ".wav"):
+        return cand + ".wav"
+
+    # Search recursively for matching filename
+    target_name = os.path.basename(rel).lower()
+    if not target_name.endswith(".wav"):
+        target_name += ".wav"
+
+    for root, _, files in os.walk(ASSETS_DIR):
+        for f in files:
+            if f.lower() == target_name:
+                return os.path.join(root, f)
+
+    return ""
+
+
 class StructureEditorDialog(wx.Dialog):
     """Dedicated Editor Window for editing everything within an interior structure."""
     def __init__(self, parent, structure_dict, on_save_callback):
@@ -707,11 +737,11 @@ class MapBuilderPanel(wx.Panel):
 
     def on_audition_emitter(self, event):
         snd_asset = self.txt_obj_sound.GetValue().strip()
-        cand = os.path.join(ASSETS_DIR, snd_asset)
-        if not os.path.exists(cand):
-            cand = os.path.join(ASSETS_DIR, "objects", snd_asset)
-        if os.path.exists(cand):
+        cand = resolve_sound_file(snd_asset)
+        if cand and os.path.exists(cand):
             winsound.PlaySound(cand, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        else:
+            wx.MessageBox(f"Sound not found: {snd_asset}", "Audition", wx.ICON_WARNING)
 
     def on_audition_ambience(self, event):
         cat = self.choice_amb_cat.GetStringSelection()
@@ -767,7 +797,7 @@ class SpawnerNPCStudioPanel(wx.Panel):
         h_presets.Add(self.btn_preset_creature, 1, wx.EXPAND)
         box_sizer.Add(h_presets, 0, wx.EXPAND | wx.ALL, 4)
 
-        grid = wx.FlexGridSizer(rows=7, cols=2, vgap=5, hgap=8)
+        grid = wx.FlexGridSizer(rows=8, cols=2, vgap=5, hgap=8)
 
         grid.Add(wx.StaticText(self, label="NPC Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.txt_npc_name = wx.TextCtrl(self, value="Town Guard Cedric")
@@ -789,6 +819,15 @@ class SpawnerNPCStudioPanel(wx.Panel):
         self.choice_clothing = wx.Choice(self, choices=CLOTHING_TYPES)
         self.choice_clothing.SetStringSelection("armor")
         grid.Add(self.choice_clothing, 1, wx.EXPAND)
+
+        grid.Add(wx.StaticText(self, label="Footstep / Motion Sound:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        h_snd = wx.BoxSizer(wx.HORIZONTAL)
+        self.txt_npc_sound = wx.TextCtrl(self, value="footsteps/wood_1.wav")
+        h_snd.Add(self.txt_npc_sound, 1, wx.EXPAND | wx.RIGHT, 4)
+        self.btn_audition_sound = wx.Button(self, label="Audition")
+        self.btn_audition_sound.Bind(wx.EVT_BUTTON, self.on_audition_sound)
+        h_snd.Add(self.btn_audition_sound, 0)
+        grid.Add(h_snd, 1, wx.EXPAND)
 
         grid.Add(wx.StaticText(self, label="Voice / Acoustic Timbre:"), 0, wx.ALIGN_CENTER_VERTICAL)
         h_voice = wx.BoxSizer(wx.HORIZONTAL)
@@ -851,6 +890,7 @@ class SpawnerNPCStudioPanel(wx.Panel):
     def on_preset_guard(self, event):
         self.txt_npc_name.SetValue("Town Guard Cedric")
         self.choice_clothing.SetStringSelection("armor")
+        self.txt_npc_sound.SetValue("footsteps/wood_1.wav")
         self.txt_voice.SetValue("auras/hum.wav")
         self.txt_wander.SetValue("6.0")
         self.txt_script.SetValue("guard_patrol")
@@ -859,6 +899,7 @@ class SpawnerNPCStudioPanel(wx.Panel):
     def on_preset_merchant(self, event):
         self.txt_npc_name.SetValue("Merchant Althea")
         self.choice_clothing.SetStringSelection("regular")
+        self.txt_npc_sound.SetValue("footsteps/carpet_1.wav")
         self.txt_voice.SetValue("auras/silk.wav")
         self.txt_wander.SetValue("3.0")
         self.txt_script.SetValue("merchant_idle")
@@ -867,6 +908,7 @@ class SpawnerNPCStudioPanel(wx.Panel):
     def on_preset_creature(self, event):
         self.txt_npc_name.SetValue("Forest Wolf")
         self.choice_clothing.SetStringSelection("naked")
+        self.txt_npc_sound.SetValue("footsteps/carpet_1.wav")
         self.txt_voice.SetValue("auras/hum.wav")
         self.txt_wander.SetValue("7.0")
         self.txt_script.SetValue("wolf_companion")
@@ -894,6 +936,7 @@ class SpawnerNPCStudioPanel(wx.Panel):
             cloth = cfg.get("clothing", "regular")
             if cloth in CLOTHING_TYPES:
                 self.choice_clothing.SetStringSelection(cloth)
+            self.txt_npc_sound.SetValue(str(cfg.get("sound_asset", "footsteps/wood_1.wav")))
             self.txt_voice.SetValue(str(cfg.get("voice_sound", "auras/hum.wav")))
             self.txt_dialogue.SetValue(str(cfg.get("dialogue", "")))
             self.txt_script.SetValue(str(cfg.get("script_name", "default_idle")))
@@ -904,12 +947,14 @@ class SpawnerNPCStudioPanel(wx.Panel):
         y = float(self.txt_sp_y.GetValue())
         wander = float(self.txt_wander.GetValue())
         clothing = self.choice_clothing.GetStringSelection()
+        sound_asset = self.txt_npc_sound.GetValue().strip()
         voice = self.txt_voice.GetValue().strip()
         dialogue = self.txt_dialogue.GetValue().strip()
         script = self.txt_script.GetValue().strip()
 
         is_creature = (clothing == "naked" or "wolf" in script.lower() or "creature" in script.lower() or "creature" in name.lower())
-        sound_asset = "footsteps/carpet_1.wav" if is_creature else "footsteps/wood_1.wav"
+        if not sound_asset:
+            sound_asset = "footsteps/carpet_1.wav" if is_creature else "footsteps/wood_1.wav"
         foley_asset = f"foley/{clothing}/{clothing}_1.wav" if clothing != "naked" else "foley/regular/regular_1.wav"
 
         sp_id = f"spawner_{name.lower().replace(' ', '_')}"
@@ -1023,13 +1068,21 @@ class SpawnerNPCStudioPanel(wx.Panel):
                 self.map_panel.on_export_map(None)
             self.refresh_spawners_from_map(self.spawners)
 
-    def on_audition_voice(self, event):
-        v = self.txt_voice.GetValue().strip()
-        cand = os.path.join(ASSETS_DIR, v)
-        if os.path.exists(cand):
+    def on_audition_sound(self, event):
+        s = self.txt_npc_sound.GetValue().strip()
+        cand = resolve_sound_file(s)
+        if cand and os.path.exists(cand):
             winsound.PlaySound(cand, winsound.SND_FILENAME | winsound.SND_ASYNC)
         else:
-            wx.MessageBox(f"Sound not found: {cand}", "Audition", wx.ICON_WARNING)
+            wx.MessageBox(f"Sound not found: {s}", "Audition", wx.ICON_WARNING)
+
+    def on_audition_voice(self, event):
+        v = self.txt_voice.GetValue().strip()
+        cand = resolve_sound_file(v)
+        if cand and os.path.exists(cand):
+            winsound.PlaySound(cand, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        else:
+            wx.MessageBox(f"Sound not found: {v}", "Audition", wx.ICON_WARNING)
 
     def on_test_dialogue(self, event):
         name = self.txt_npc_name.GetValue().strip()

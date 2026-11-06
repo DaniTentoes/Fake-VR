@@ -60,6 +60,7 @@ class NPCInstance:
         walk_interval: float = 2.5,
         sound_asset: str = "footsteps/wood_1.wav",
         foley_asset: str = "foley/regular/regular_1.wav",
+        voice_sound: str = "auras/hum.wav",
         clothing: str = "regular",
         dialogue: str = "Greetings, traveler.",
         script_name: str = "default_idle"
@@ -74,6 +75,7 @@ class NPCInstance:
         self.last_step_time = time.time() + random.uniform(0.5, 2.0)
         self.sound_asset = sound_asset
         self.foley_asset = foley_asset
+        self.voice_sound = voice_sound
         self.clothing = clothing
         self.dialogue = dialogue
         self.script_name = script_name
@@ -119,6 +121,7 @@ class NPCInstance:
             "is_moving": self.is_moving,
             "sound_asset": self.sound_asset,
             "foley_asset": self.foley_asset,
+            "voice_sound": self.voice_sound,
             "clothing": self.clothing,
             "dialogue": self.dialogue,
             "script_name": self.script_name
@@ -226,8 +229,8 @@ class RoomState:
             wander_rad = float(sp.get("wander_radius", 5.0))
             cfg = sp.get("npc_config", {})
 
-            if entity_type == "npc":
-                npc_id = spawner_id if spawner_id.startswith("npc_") else f"npc_{spawner_id}"
+            if entity_type in ("npc", "creature"):
+                npc_id = spawner_id if (spawner_id.startswith("npc_") or spawner_id.startswith("spawner_")) else f"npc_{spawner_id}"
                 npc = NPCInstance(
                     npc_id=npc_id,
                     name=cfg.get("name", "Traveler"),
@@ -236,6 +239,7 @@ class RoomState:
                     walk_interval=float(cfg.get("walk_interval", 3.0)),
                     sound_asset=cfg.get("sound_asset", "footsteps/wood_1.wav"),
                     foley_asset=cfg.get("foley_asset", "foley/regular/regular_1.wav"),
+                    voice_sound=cfg.get("voice_sound", "auras/hum.wav"),
                     clothing=cfg.get("clothing", "regular"),
                     dialogue=cfg.get("dialogue", "Greetings, traveler."),
                     script_name=cfg.get("script_name", "default_idle")
@@ -347,6 +351,7 @@ class RoomState:
                         walk_interval=float(nstate.get("walk_interval", 3.0)),
                         sound_asset=nstate.get("sound_asset", "footsteps/wood_1.wav"),
                         foley_asset=nstate.get("foley_asset", "foley/regular/regular_1.wav"),
+                        voice_sound=nstate.get("voice_sound", "auras/hum.wav"),
                         clothing=nstate.get("clothing", "regular"),
                         dialogue=nstate.get("dialogue", "Greetings, traveler."),
                         script_name=nstate.get("script_name", "default_idle")
@@ -384,6 +389,7 @@ class RoomState:
                     "walk_interval": npc.walk_interval,
                     "sound_asset": npc.sound_asset,
                     "foley_asset": npc.foley_asset,
+                    "voice_sound": getattr(npc, "voice_sound", "auras/hum.wav"),
                     "clothing": npc.clothing,
                     "dialogue": npc.dialogue,
                     "script_name": npc.script_name

@@ -547,7 +547,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             NPCInteractResponse npcResp;
             while (net.pollNPCInteract(npcResp)) {
                 if (!npcResp.soundAsset.empty()) {
-                    audio.triggerNPCSound(playerPos, npcResp.soundAsset);
+                    Vector3 sndPos = (npcResp.position.magnitude() > 0.1f) ? npcResp.position : playerPos;
+                    audio.triggerNPCSound(sndPos, npcResp.soundAsset);
                 }
             }
 
@@ -823,7 +824,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
                     if (d <= 2.5f) {
                         foundNPC = true;
                         sr.speak("Speaking to " + npc.name + ": " + npc.dialogue);
-                        audio.triggerNPCSound(npc.position, npc.soundAsset);
+                        audio.triggerNPCSound(npc.position, npc.voiceSound.empty() ? npc.soundAsset : npc.voiceSound);
                         if (isMultiplayer) {
                             net.sendInteract(npc.id);
                         }

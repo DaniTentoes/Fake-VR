@@ -69,6 +69,7 @@ struct NPCInteractResponse {
     std::string speakerName;
     std::string dialogue;
     std::string soundAsset;
+    Vector3 position;
 };
 
 class NetworkClient {
@@ -576,12 +577,13 @@ private:
                         an.name = n.value("name", "NPC");
                         if (n.contains("position") && n["position"].is_object()) {
                             an.position.x = n["position"].value("x", 0.0f);
-                            an.position.y = n["position"].value("y", 0.0f);
+                            an.position.y = n["position"].value("y", n["position"].value("z", 0.0f));
                             an.position.z = n["position"].value("z", 0.0f);
                         }
                         an.yaw = n.value("yaw", 0.0f);
                         an.soundAsset = n.value("sound_asset", "footsteps/wood_1.wav");
                         an.foleyAsset = n.value("foley_asset", "foley/regular/regular_1.wav");
+                        an.voiceSound = n.value("voice_sound", "auras/hum.wav");
                         an.clothing = n.value("clothing", "regular");
                         an.dialogue = n.value("dialogue", "Greetings.");
                         an.isMoving = n.value("is_moving", false);
@@ -602,10 +604,17 @@ private:
                 resp.speakerName = payload.value("speaker_name", "Speaker");
                 resp.dialogue = payload.value("dialogue", "...");
                 resp.soundAsset = payload.value("sound_asset", "");
+                if (payload.contains("position") && payload["position"].is_object()) {
+                    resp.position.x = payload["position"].value("x", 0.0f);
+                    resp.position.y = payload["position"].value("y", payload["position"].value("z", 0.0f));
+                    resp.position.z = payload["position"].value("z", 0.0f);
+                }
 
                 std::lock_guard<std::mutex> lock(eventMutex);
                 npcResponseQueue.push(resp);
-                announcements.push(resp.speakerName + " says: " + resp.dialogue);
+                if (!resp.speakerName.empty() && !resp.dialogue.empty()) {
+                    announcements.push(resp.speakerName + " says: " + resp.dialogue);
+                }
             }
             else if (type == "s2c_map_data" || type == "s2c_map_updated") {
                 if (payload.contains("map") && payload["map"].is_object()) {

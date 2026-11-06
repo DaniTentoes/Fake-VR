@@ -430,7 +430,7 @@ class FakeVRServer:
                                 "distance": dist
                             }, room_state=room_st)
 
-                            sound_to_play = npc.sound_asset
+                            sound_to_play = getattr(npc, "voice_sound", "") or npc.sound_asset
                             for cmd in script_cmds:
                                 if cmd.get("type") == "play_sound":
                                     sound_to_play = cmd.get("sound_asset", sound_to_play)
@@ -443,7 +443,8 @@ class FakeVRServer:
                                 {
                                     "speaker_name": npc.name,
                                     "dialogue": npc.dialogue,
-                                    "sound_asset": sound_to_play
+                                    "sound_asset": sound_to_play,
+                                    "position": npc.position.to_dict()
                                 }
                             )
 
@@ -468,9 +469,11 @@ class FakeVRServer:
                         walk_interval = float(npc_cfg.get("walk_interval", 3.0))
                         sound_asset = npc_cfg.get("sound_asset", "footsteps/wood_1.wav")
                         foley_asset = npc_cfg.get("foley_asset", "foley/regular/regular_1.wav")
+                        voice_sound = npc_cfg.get("voice_sound", "auras/hum.wav")
                         clothing = npc_cfg.get("clothing", "regular")
                         dialogue = npc_cfg.get("dialogue", "Greetings, traveler.")
                         script_name = npc_cfg.get("script_name", "default_idle")
+                        entity_type = spawner_data.get("entity_type", "npc")
 
                         npc_id = spawner_data.get("id") or f"npc_{str(uuid.uuid4())[:6]}"
 
@@ -482,6 +485,7 @@ class FakeVRServer:
                             walk_interval=walk_interval,
                             sound_asset=sound_asset,
                             foley_asset=foley_asset,
+                            voice_sound=voice_sound,
                             clothing=clothing,
                             dialogue=dialogue,
                             script_name=script_name
@@ -495,7 +499,7 @@ class FakeVRServer:
                         if not existing:
                             self.current_map_data["spawners"].append({
                                 "id": npc_id,
-                                "entity_type": "npc",
+                                "entity_type": entity_type,
                                 "x": sp_x, "y": sp_y, "z": sp_z,
                                 "wander_radius": wander_rad,
                                 "interval": walk_interval,
@@ -503,6 +507,7 @@ class FakeVRServer:
                                     "name": npc_name,
                                     "sound_asset": sound_asset,
                                     "foley_asset": foley_asset,
+                                    "voice_sound": voice_sound,
                                     "clothing": clothing,
                                     "dialogue": dialogue,
                                     "script_name": script_name,
